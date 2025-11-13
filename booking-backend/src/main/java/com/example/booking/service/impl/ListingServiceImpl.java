@@ -1,5 +1,6 @@
 package com.example.booking.service.impl;
 
+import com.example.booking.dto.listing.ListingFilterRequest;
 import com.example.booking.dto.listing.ListingRequest;
 import com.example.booking.dto.listing.ListingResponse;
 import com.example.booking.entity.Listing;
@@ -10,10 +11,14 @@ import com.example.booking.model.Amenity;
 import com.example.booking.model.Policy;
 import com.example.booking.repository.ListingRepository;
 import com.example.booking.service.ListingService;
+import com.example.booking.specification.ListingSpecifications;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
@@ -77,8 +82,22 @@ public class ListingServiceImpl implements ListingService {
     }
 
     @Override
-    public Page<ListingResponse> getAllListings(Pageable pageable) {
-        return listingRepository.findAll(pageable).map(this::toResponse);
+    public Page<ListingResponse> getAllListings(ListingFilterRequest filter, Pageable pageable) {
+        ListingFilterRequest criteria = filter == null ? new ListingFilterRequest(null, null, null, null, null, null) : filter;
+        validateDateRange(criteria.startDate(), criteria.endDate());
+        validatePriceRange(criteria.minPrice(), criteria.maxPrice());
+        Set<Amenity> amenities = convertAmenities(criteria.amenities());
+
+        Specification<Listing> spec = ListingSpecifications.withFilters(
+                criteria.location(),
+                criteria.minPrice(),
+                criteria.maxPrice(),
+                amenities,
+                criteria.startDate(),
+                criteria.endDate()
+        );
+
+        return listingRepository.findAll(spec, pageable).map(this::toResponse);
     }
 
     private ListingResponse toResponse(Listing listing) {
@@ -99,6 +118,18 @@ public class ListingServiceImpl implements ListingService {
     private void validateOwnership(Listing listing, User host) {
         if (listing.getHost() == null || !listing.getHost().getId().equals(host.getId())) {
             throw new BadRequestException("You are not allowed to modify this listing");
+        }
+    }
+
+    private void validateDateRange(LocalDate startDate, LocalDate endDate) {
+        if (startDate != null && endDate != null && endDate.isBefore(startDate)) {
+            throw new BadRequestException("End date must be after start date");
+        }
+    }
+
+    private void validatePriceRange(BigDecimal minPrice, BigDecimal maxPrice) {
+        if (minPrice != null && maxPrice != null && maxPrice.compareTo(minPrice) < 0) {
+            throw new BadRequestException("Max price must be greater than or equal to min price");
         }
     }
 

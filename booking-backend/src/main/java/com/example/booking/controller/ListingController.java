@@ -1,6 +1,7 @@
 package com.example.booking.controller;
 
 import com.example.booking.dto.common.PageResponse;
+import com.example.booking.dto.listing.ListingFilterRequest;
 import com.example.booking.dto.listing.ListingRequest;
 import com.example.booking.dto.listing.ListingResponse;
 import com.example.booking.model.Amenity;
@@ -61,9 +62,10 @@ public class ListingController {
     }
 
     @GetMapping
-    public ResponseEntity<PageResponse<ListingResponse>> getListings(@RequestParam(name = "page", defaultValue = "0") int page,
+    public ResponseEntity<PageResponse<ListingResponse>> getListings(@ModelAttribute ListingFilterRequest filter,
+                                                                     @RequestParam(name = "page", defaultValue = "0") int page,
                                                                      @RequestParam(name = "size", defaultValue = "10") int size) {
         Pageable pageable = PageRequest.of(page, size);
-        return ResponseEntity.ok(PageResponse.from(listingService.getAllListings(pageable)));
+        return ResponseEntity.ok(PageResponse.from(listingService.getAllListings(filter, pageable)));
     }
 }

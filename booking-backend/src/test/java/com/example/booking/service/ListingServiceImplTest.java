@@ -1,5 +1,6 @@
 package com.example.booking.service;
 
+import com.example.booking.dto.listing.ListingFilterRequest;
 import com.example.booking.dto.listing.ListingRequest;
 import com.example.booking.dto.listing.ListingResponse;
 import com.example.booking.entity.Listing;
@@ -17,10 +18,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -30,7 +34,6 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -183,11 +186,33 @@ class ListingServiceImplTest {
                 .build();
 
         Page<Listing> page = new PageImpl<>(List.of(listing));
-        when(listingRepository.findAll(any(PageRequest.class))).thenReturn(page);
+        when(listingRepository.findAll(Mockito.<Specification<Listing>>any(), any(Pageable.class))).thenReturn(page);
 
-        Page<ListingResponse> result = listingService.getAllListings(PageRequest.of(0, 5));
+        ListingFilterRequest filter = new ListingFilterRequest(null, null, null, null, null, null);
+        Page<ListingResponse> result = listingService.getAllListings(filter, PageRequest.of(0, 5));
 
         assertThat(result.getContent()).hasSize(1);
         assertThat(result.getContent().get(0).getAmenities()).containsExactly("WIFI");
+        verify(listingRepository).findAll(Mockito.<Specification<Listing>>any(), any(Pageable.class));
+    }
+
+    @Test
+    @DisplayName("getAllListings validates date ranges")
+    void getAllListings_invalidDateRange() {
+        ListingFilterRequest filter = new ListingFilterRequest(null, null, null, java.time.LocalDate.now().plusDays(5), java.time.LocalDate.now(), null);
+
+        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("End date must be after start date");
+    }
+
+    @Test
+    @DisplayName("getAllListings validates price ranges")
+    void getAllListings_invalidPriceRange() {
+        ListingFilterRequest filter = new ListingFilterRequest(null, BigDecimal.TEN, BigDecimal.ONE, null, null, null);
+
+        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("Max price must be greater");
     }
 }
