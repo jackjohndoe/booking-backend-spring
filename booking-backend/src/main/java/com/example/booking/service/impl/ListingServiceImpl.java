@@ -112,6 +112,8 @@ public class ListingServiceImpl implements ListingService {
                 .hostName(listing.getHost() != null ? listing.getHost().getName() : null)
                 .amenities(toStringSet(listing.getAmenities()))
                 .policies(toStringSet(listing.getPolicies()))
+                .averageRating(listing.getAverageRating())
+                .reviewCount(listing.getReviewCount())
                 .build();
     }
 

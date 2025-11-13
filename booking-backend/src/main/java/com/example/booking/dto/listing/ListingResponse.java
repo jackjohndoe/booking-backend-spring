@@ -20,4 +20,6 @@ public class ListingResponse {
     String hostName;
     Set<String> amenities;
     Set<String> policies;
+    Double averageRating;
+    Integer reviewCount;
 }

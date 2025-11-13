@@ -59,6 +59,18 @@ public class Listing {
 
     @OneToMany(mappedBy = "listing", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
+    private Set<Review> reviews = new HashSet<>();
+
+    @Column(nullable = false)
+    @Builder.Default
+    private Double averageRating = 0.0;
+
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer reviewCount = 0;
+
+    @OneToMany(mappedBy = "listing", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
     private Set<Booking> bookings = new HashSet<>();
 
     @PrePersist
