@@ -18,4 +18,6 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
                                           @Param("endDate") LocalDate endDate);
 
     Page<Booking> findByUserId(Long userId, Pageable pageable);
+
+    boolean existsByListingIdAndUserId(Long listingId, Long userId);
 }
