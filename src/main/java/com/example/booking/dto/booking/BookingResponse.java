@@ -15,4 +15,6 @@ public class BookingResponse {
     LocalDate startDate;
     LocalDate endDate;
     BigDecimal totalPrice;
+    String status;
+    BookingListingSummary listing;
 }

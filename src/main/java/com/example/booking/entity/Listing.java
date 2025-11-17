@@ -59,6 +59,10 @@ public class Listing {
 
     @OneToMany(mappedBy = "listing", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
+    private Set<ListingPhoto> photos = new HashSet<>();
+
+    @OneToMany(mappedBy = "listing", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
     private Set<Review> reviews = new HashSet<>();
 
     @Column(nullable = false)

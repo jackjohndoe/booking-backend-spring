@@ -20,4 +20,10 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     Page<Booking> findByUserId(Long userId, Pageable pageable);
 
     boolean existsByListingIdAndUserId(Long listingId, Long userId);
+
+    Page<Booking> findByUserIdAndEndDateBefore(Long userId, LocalDate date, Pageable pageable);
+
+    Page<Booking> findByUserIdAndStartDateAfter(Long userId, LocalDate date, Pageable pageable);
+
+    Page<Booking> findByUserIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(Long userId, LocalDate start, LocalDate end, Pageable pageable);
 }

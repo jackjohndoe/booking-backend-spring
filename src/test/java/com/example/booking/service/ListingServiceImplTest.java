@@ -4,11 +4,14 @@ import com.example.booking.dto.listing.ListingFilterRequest;
 import com.example.booking.dto.listing.ListingRequest;
 import com.example.booking.dto.listing.ListingResponse;
 import com.example.booking.entity.Listing;
+import com.example.booking.entity.ListingPhoto;
 import com.example.booking.entity.User;
 import com.example.booking.exception.BadRequestException;
 import com.example.booking.exception.ResourceNotFoundException;
 import com.example.booking.model.Amenity;
 import com.example.booking.model.Policy;
+import com.example.booking.repository.FavoriteRepository;
+import com.example.booking.repository.ListingPhotoRepository;
 import com.example.booking.repository.ListingRepository;
 import com.example.booking.service.impl.ListingServiceImpl;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,6 +28,7 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.mock.web.MockMultipartFile;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -34,6 +38,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -41,6 +46,15 @@ class ListingServiceImplTest {
 
     @Mock
     private ListingRepository listingRepository;
+
+    @Mock
+    private FavoriteRepository favoriteRepository;
+
+    @Mock
+    private ListingPhotoRepository listingPhotoRepository;
+
+    @Mock
+    private StorageService storageService;
 
     @InjectMocks
     private ListingServiceImpl listingService;
@@ -90,6 +104,7 @@ class ListingServiceImplTest {
         assertThat(captor.getValue().getPolicies()).containsExactlyInAnyOrder(Policy.NO_PETS, Policy.CANCELLATION_STRICT);
         assertThat(response.getId()).isEqualTo(saved.getId());
         assertThat(response.getAmenities()).containsExactlyInAnyOrder("WIFI", "POOL");
+        assertThat(response.getPhotos()).isEmpty();
     }
 
     @Test
@@ -116,6 +131,7 @@ class ListingServiceImplTest {
 
         when(listingRepository.findById(listing.getId())).thenReturn(Optional.of(listing));
         when(listingRepository.save(listing)).thenReturn(listing);
+        when(favoriteRepository.existsByUserIdAndListingId(host.getId(), listing.getId())).thenReturn(false);
 
         ListingResponse response = listingService.updateListing(listing.getId(), request, host);
 
@@ -187,12 +203,14 @@ class ListingServiceImplTest {
 
         Page<Listing> page = new PageImpl<>(List.of(listing));
         when(listingRepository.findAll(Mockito.<Specification<Listing>>any(), any(Pageable.class))).thenReturn(page);
+        when(favoriteRepository.findListingIdsByUserId(host.getId())).thenReturn(Set.of(listing.getId()));
 
         ListingFilterRequest filter = new ListingFilterRequest(null, null, null, null, null, null);
-        Page<ListingResponse> result = listingService.getAllListings(filter, PageRequest.of(0, 5));
+        Page<ListingResponse> result = listingService.getAllListings(filter, PageRequest.of(0, 5), host);
 
         assertThat(result.getContent()).hasSize(1);
         assertThat(result.getContent().get(0).getAmenities()).containsExactly("WIFI");
+        assertThat(result.getContent().get(0).isFavorite()).isTrue();
         verify(listingRepository).findAll(Mockito.<Specification<Listing>>any(), any(Pageable.class));
     }
 
@@ -201,7 +219,7 @@ class ListingServiceImplTest {
     void getAllListings_invalidDateRange() {
         ListingFilterRequest filter = new ListingFilterRequest(null, null, null, java.time.LocalDate.now().plusDays(5), java.time.LocalDate.now(), null);
 
-        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5)))
+        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5), host))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("End date must be after start date");
     }
@@ -211,8 +229,75 @@ class ListingServiceImplTest {
     void getAllListings_invalidPriceRange() {
         ListingFilterRequest filter = new ListingFilterRequest(null, BigDecimal.TEN, BigDecimal.ONE, null, null, null);
 
-        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5)))
+        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5), host))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("Max price must be greater");
+    }
+
+    @Test
+    @DisplayName("getListing marks favorite when applicable")
+    void getListing_favoriteFlag() {
+        Listing listing = Listing.builder()
+                .id(55L)
+                .title("Beach House")
+                .host(host)
+                .build();
+
+        when(listingRepository.findById(listing.getId())).thenReturn(Optional.of(listing));
+        when(favoriteRepository.existsByUserIdAndListingId(host.getId(), listing.getId())).thenReturn(true);
+
+        ListingResponse response = listingService.getListing(listing.getId(), host);
+
+        assertThat(response.isFavorite()).isTrue();
+    }
+
+    @Test
+    @DisplayName("addPhotos stores files and returns URLs")
+    void addPhotos_success() {
+        Listing listing = Listing.builder()
+                .id(90L)
+                .title("Loft")
+                .host(host)
+                .build();
+
+        MockMultipartFile file = new MockMultipartFile("files", "photo.jpg", "image/jpeg", "data".getBytes());
+        String directory = "listings/" + listing.getId();
+        String storedPath = directory + "/photo.jpg";
+
+        when(listingRepository.findById(listing.getId())).thenReturn(Optional.of(listing));
+        when(storageService.store(any(), eq(directory))).thenReturn(storedPath);
+        when(storageService.resolveUrl(storedPath)).thenReturn("http://localhost/api/files/" + storedPath);
+        when(listingPhotoRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Set<String> urls = listingService.addPhotos(listing.getId(), host, List.of(file));
+
+        assertThat(urls).contains("http://localhost/api/files/" + storedPath);
+        verify(storageService).store(any(), eq(directory));
+        assertThat(listing.getPhotos()).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("removePhoto deletes stored file")
+    void removePhoto_success() {
+        Listing listing = Listing.builder()
+                .id(91L)
+                .host(host)
+                .build();
+
+        ListingPhoto photo = ListingPhoto.builder()
+                .id(5L)
+                .listing(listing)
+                .path("listings/91/photo.jpg")
+                .build();
+        listing.getPhotos().add(photo);
+
+        when(listingRepository.findById(listing.getId())).thenReturn(Optional.of(listing));
+        when(listingPhotoRepository.findByIdAndListingId(photo.getId(), listing.getId())).thenReturn(Optional.of(photo));
+
+        listingService.removePhoto(listing.getId(), photo.getId(), host);
+
+        verify(storageService).delete("listings/91/photo.jpg");
+        verify(listingPhotoRepository).delete(photo);
+        assertThat(listing.getPhotos()).isEmpty();
     }
 }

@@ -1,5 +1,6 @@
 package com.example.booking.service.impl;
 
+import com.example.booking.dto.booking.BookingListingSummary;
 import com.example.booking.dto.booking.BookingRequest;
 import com.example.booking.dto.booking.BookingResponse;
 import com.example.booking.entity.Booking;
@@ -55,8 +56,21 @@ public class BookingServiceImpl implements BookingService {
     }
 
     @Override
-    public Page<BookingResponse> getBookingsForUser(Long userId, Pageable pageable) {
-        return bookingRepository.findByUserId(userId, pageable).map(this::toResponse);
+    public Page<BookingResponse> getBookingsForUser(Long userId, Pageable pageable, String status) {
+        Page<Booking> bookings;
+        LocalDate today = LocalDate.now();
+        if (status == null || status.isBlank()) {
+            bookings = bookingRepository.findByUserId(userId, pageable);
+        } else {
+            String normalized = status.trim().toUpperCase();
+            switch (normalized) {
+                case "PAST" -> bookings = bookingRepository.findByUserIdAndEndDateBefore(userId, today, pageable);
+                case "UPCOMING" -> bookings = bookingRepository.findByUserIdAndStartDateAfter(userId, today, pageable);
+                case "CURRENT" -> bookings = bookingRepository.findByUserIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(userId, today, today, pageable);
+                default -> throw new BadRequestException("Invalid status. Allowed values: PAST, CURRENT, UPCOMING");
+            }
+        }
+        return bookings.map(this::toResponse);
     }
 
     @Override
@@ -73,14 +87,35 @@ public class BookingServiceImpl implements BookingService {
     }
 
     private BookingResponse toResponse(Booking booking) {
+        Listing listing = booking.getListing();
         return BookingResponse.builder()
                 .id(booking.getId())
-                .listingId(booking.getListing().getId())
+                .listingId(listing.getId())
                 .userId(booking.getUser().getId())
                 .startDate(booking.getStartDate())
                 .endDate(booking.getEndDate())
                 .totalPrice(booking.getTotalPrice())
+                .status(determineStatus(booking.getStartDate(), booking.getEndDate()))
+                .listing(BookingListingSummary.builder()
+                        .id(listing.getId())
+                        .title(listing.getTitle())
+                        .location(listing.getLocation())
+                        .price(listing.getPrice())
+                        .averageRating(listing.getAverageRating())
+                        .reviewCount(listing.getReviewCount())
+                        .build())
                 .build();
+    }
+
+    private String determineStatus(LocalDate startDate, LocalDate endDate) {
+        LocalDate today = LocalDate.now();
+        if (endDate.isBefore(today)) {
+            return "PAST";
+        }
+        if (startDate.isAfter(today)) {
+            return "UPCOMING";
+        }
+        return "CURRENT";
     }
 
     private void validateDates(LocalDate startDate, LocalDate endDate) {

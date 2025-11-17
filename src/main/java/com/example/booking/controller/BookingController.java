@@ -36,9 +36,12 @@ public class BookingController {
     @GetMapping
     public ResponseEntity<PageResponse<BookingResponse>> getBookings(@AuthenticationPrincipal BookingUserDetails userDetails,
                                                                      @RequestParam(name = "page", defaultValue = "0") int page,
-                                                                     @RequestParam(name = "size", defaultValue = "10") int size) {
+                                                                     @RequestParam(name = "size", defaultValue = "10") int size,
+                                                                     @RequestParam(name = "status", required = false) String status) {
         Pageable pageable = PageRequest.of(page, size);
-        return ResponseEntity.ok(PageResponse.from(bookingService.getBookingsForUser(userDetails.getUser().getId(), pageable)));
+        return ResponseEntity.ok(PageResponse.from(
+                bookingService.getBookingsForUser(userDetails.getUser().getId(), pageable, status)
+        ));
     }
 
     @DeleteMapping("/{id}")
