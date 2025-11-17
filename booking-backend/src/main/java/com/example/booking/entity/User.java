@@ -33,6 +33,13 @@ public class User {
     @NotBlank
     private String password;
 
+    private String avatarUrl;
+
+    @Column(length = 1000)
+    private String bio;
+
+    private String location;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private Role role;

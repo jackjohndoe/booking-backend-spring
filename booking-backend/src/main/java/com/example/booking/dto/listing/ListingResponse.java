@@ -22,4 +22,6 @@ public class ListingResponse {
     Set<String> policies;
     Double averageRating;
     Integer reviewCount;
+    Set<String> photos;
+    boolean favorite;
 }

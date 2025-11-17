@@ -9,6 +9,6 @@ import org.springframework.data.domain.Pageable;
 public interface BookingService {
     BookingResponse createBooking(BookingRequest request, User user);
     BookingResponse getBooking(Long id);
-    Page<BookingResponse> getBookingsForUser(Long userId, Pageable pageable);
+    Page<BookingResponse> getBookingsForUser(Long userId, Pageable pageable, String status);
     void cancelBooking(Long id, User user);
 }

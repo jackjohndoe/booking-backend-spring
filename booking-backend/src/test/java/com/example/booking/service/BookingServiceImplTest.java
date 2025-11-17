@@ -54,7 +54,13 @@ class BookingServiceImplTest {
     void setUp() {
         guest = User.builder().id(1L).email("guest@example.com").role(User.Role.GUEST).build();
         host = User.builder().id(2L).email("host@example.com").role(User.Role.HOST).build();
-        listing = Listing.builder().id(100L).host(host).build();
+        listing = Listing.builder()
+                .id(100L)
+                .host(host)
+                .title("Modern Loft")
+                .location("Lagos")
+                .price(BigDecimal.valueOf(500))
+                .build();
     }
 
     @Test
@@ -89,6 +95,8 @@ class BookingServiceImplTest {
         assertThat(captured.getListing()).isEqualTo(listing);
         assertThat(captured.getUser()).isEqualTo(guest);
         assertThat(response.getId()).isEqualTo(saved.getId());
+        assertThat(response.getStatus()).isEqualTo("UPCOMING");
+        assertThat(response.getListing().getTitle()).isEqualTo(listing.getTitle());
     }
 
     @Test
@@ -153,11 +161,35 @@ class BookingServiceImplTest {
 
         when(bookingRepository.findByUserId(eq(guest.getId()), any(Pageable.class))).thenReturn(page);
 
-        Page<BookingResponse> result = bookingService.getBookingsForUser(guest.getId(), PageRequest.of(0, 5));
+        Page<BookingResponse> result = bookingService.getBookingsForUser(guest.getId(), PageRequest.of(0, 5), null);
 
         verify(bookingRepository).findByUserId(eq(guest.getId()), any(Pageable.class));
         assertThat(result.getContent()).hasSize(1);
         assertThat(result.getContent().get(0).getUserId()).isEqualTo(guest.getId());
+        assertThat(result.getContent().get(0).getListing().getId()).isEqualTo(listing.getId());
+    }
+
+    @Test
+    @DisplayName("getBookingsForUser filters by status")
+    void getBookingsForUser_statusFilter() {
+        Booking upcoming = Booking.builder().id(60L).listing(listing).user(guest)
+                .startDate(LocalDate.now().plusDays(2)).endDate(LocalDate.now().plusDays(4)).build();
+        Page<Booking> page = new PageImpl<>(List.of(upcoming));
+
+        when(bookingRepository.findByUserIdAndStartDateAfter(eq(guest.getId()), any(LocalDate.class), any(Pageable.class)))
+                .thenReturn(page);
+
+        Page<BookingResponse> result = bookingService.getBookingsForUser(guest.getId(), PageRequest.of(0, 5), "upcoming");
+
+        assertThat(result.getContent()).hasSize(1);
+        assertThat(result.getContent().get(0).getStatus()).isEqualTo("UPCOMING");
+    }
+
+    @Test
+    @DisplayName("getBookingsForUser rejects invalid status")
+    void getBookingsForUser_invalidStatus() {
+        assertThatThrownBy(() -> bookingService.getBookingsForUser(guest.getId(), PageRequest.of(0, 5), "unknown"))
+                .isInstanceOf(BadRequestException.class);
     }
 
     @Test
