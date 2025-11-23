@@ -64,7 +64,36 @@ stripe.secret-key=${STRIPE_SECRET_KEY:sk_test_...}
 export STRIPE_SECRET_KEY=sk_test_your_key_here
 ```
 
-### 3. PayPal Payment Provider (Example)
+### 3. Paystack Payment Provider
+
+**Status:** ✅ Fully implemented  
+**Use case:** Production payments (especially for African markets)
+
+**Setup Steps:**
+
+1. **No additional dependencies required** - Uses Spring's built-in RestTemplate for HTTP calls
+
+2. **Add Paystack API key to `application.properties`:**
+```properties
+payment.provider=paystack
+paystack.secret-key=${PAYSTACK_SECRET_KEY:sk_test_...}
+```
+
+3. **Get your Paystack API keys:**
+   - Sign up at [Paystack](https://paystack.com/)
+   - Navigate to Settings > API Keys & Webhooks in your dashboard
+   - Copy your Secret Key (starts with `sk_test_` for test mode or `sk_live_` for live mode)
+
+4. **Set environment variable:**
+```bash
+export PAYSTACK_SECRET_KEY=sk_test_your_key_here
+```
+
+5. **For payouts (transfers):** Paystack requires bank account details. Make sure to provide proper bank codes when creating payouts.
+
+**Note:** Paystack uses REST APIs, so no SDK dependency is needed. The implementation uses Spring's RestTemplate which is already included in `spring-boot-starter-web`.
+
+### 4. PayPal Payment Provider (Example)
 
 To add PayPal support:
 
@@ -83,6 +112,7 @@ Spring Boot automatically selects the correct provider based on the `payment.pro
 
 - `@ConditionalOnProperty(name = "payment.provider", havingValue = "local")` → LocalPaymentProvider
 - `@ConditionalOnProperty(name = "payment.provider", havingValue = "stripe")` → StripePaymentProvider
+- `@ConditionalOnProperty(name = "payment.provider", havingValue = "paystack")` → PaystackPaymentProvider
 
 Only **one provider** is active at a time.
 
