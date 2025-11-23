@@ -14,12 +14,13 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
-# Copy the built JAR
-COPY --from=build /app/target/booking-0.0.1-SNAPSHOT.jar app.jar
+# Copy the built JAR (keep original name for Railway compatibility)
+COPY --from=build /app/target/booking-0.0.1-SNAPSHOT.jar booking-0.0.1-SNAPSHOT.jar
 
 # Expose port
 EXPOSE 8080
 
 # Run the application
-ENTRYPOINT ["java", "-jar", "app.jar", "--spring.profiles.active=staging"]
+# Railway will use this CMD, or you can override with startCommand
+CMD ["java", "-jar", "booking-0.0.1-SNAPSHOT.jar", "--spring.profiles.active=staging"]
 
