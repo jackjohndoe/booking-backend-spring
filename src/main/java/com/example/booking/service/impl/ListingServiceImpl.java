@@ -13,9 +13,11 @@ import com.example.booking.model.Policy;
 import com.example.booking.repository.FavoriteRepository;
 import com.example.booking.repository.ListingPhotoRepository;
 import com.example.booking.repository.ListingRepository;
+import com.example.booking.service.AuditService;
 import com.example.booking.service.ListingService;
 import com.example.booking.service.StorageService;
 import com.example.booking.specification.ListingSpecifications;
+import com.example.booking.util.SecurityUtils;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -38,15 +40,18 @@ public class ListingServiceImpl implements ListingService {
     private final FavoriteRepository favoriteRepository;
     private final ListingPhotoRepository listingPhotoRepository;
     private final StorageService storageService;
+    private final AuditService auditService;
 
     public ListingServiceImpl(ListingRepository listingRepository,
                               FavoriteRepository favoriteRepository,
                               ListingPhotoRepository listingPhotoRepository,
-                              StorageService storageService) {
+                              StorageService storageService,
+                              AuditService auditService) {
         this.listingRepository = listingRepository;
         this.favoriteRepository = favoriteRepository;
         this.listingPhotoRepository = listingPhotoRepository;
         this.storageService = storageService;
+        this.auditService = auditService;
     }
 
     @Override
@@ -70,6 +75,7 @@ public class ListingServiceImpl implements ListingService {
         Listing listing = listingRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + id));
 
+        boolean isAdminAction = SecurityUtils.isAdmin(host) && !listing.getHost().getId().equals(host.getId());
         validateOwnership(listing, host);
 
         listing.setTitle(request.getTitle());
@@ -80,6 +86,12 @@ public class ListingServiceImpl implements ListingService {
         listing.setPolicies(convertPolicies(request.getPolicies()));
 
         Listing saved = listingRepository.save(listing);
+        
+        if (isAdminAction) {
+            auditService.logAdminAction(host, "LISTING_UPDATE", "Listing", id, 
+                    String.format("Admin updated listing '%s' (owned by user %d)", saved.getTitle(), listing.getHost().getId()));
+        }
+        
         boolean favorite = host != null && favoriteRepository.existsByUserIdAndListingId(host.getId(), saved.getId());
         return toResponse(saved, favorite);
     }
@@ -88,8 +100,22 @@ public class ListingServiceImpl implements ListingService {
     public void deleteListing(Long id, User host) {
         Listing listing = listingRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + id));
+        
+        boolean isAdminAction = SecurityUtils.isAdmin(host) && (listing.getHost() == null || !listing.getHost().getId().equals(host.getId()));
+        String listingTitle = listing.getTitle();
+        Long ownerId = listing.getHost() != null ? listing.getHost().getId() : null;
+        
         validateOwnership(listing, host);
+        
+        // Delete associated photos from storage
+        listing.getPhotos().forEach(photo -> storageService.delete(photo.getPath()));
+        
         listingRepository.delete(listing);
+        
+        if (isAdminAction) {
+            auditService.logAdminAction(host, "LISTING_DELETE", "Listing", id, 
+                    String.format("Admin deleted listing '%s' (owned by user %d)", listingTitle, ownerId));
+        }
     }
 
     @Override
@@ -133,6 +159,8 @@ public class ListingServiceImpl implements ListingService {
     public Set<String> addPhotos(Long listingId, User host, List<MultipartFile> files) {
         Listing listing = listingRepository.findById(listingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + listingId));
+        
+        boolean isAdminAction = SecurityUtils.isAdmin(host) && (listing.getHost() == null || !listing.getHost().getId().equals(host.getId()));
         validateOwnership(listing, host);
 
         if (files == null || files.isEmpty()) {
@@ -158,6 +186,11 @@ public class ListingServiceImpl implements ListingService {
             throw new BadRequestException("No valid files provided");
         }
 
+        if (isAdminAction) {
+            auditService.logAdminAction(host, "LISTING_PHOTO_ADD", "Listing", listingId, 
+                    String.format("Admin added %d photo(s) to listing '%s'", urls.size(), listing.getTitle()));
+        }
+
         return urls;
     }
 
@@ -165,6 +198,8 @@ public class ListingServiceImpl implements ListingService {
     public void removePhoto(Long listingId, Long photoId, User host) {
         Listing listing = listingRepository.findById(listingId)
                 .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + listingId));
+        
+        boolean isAdminAction = SecurityUtils.isAdmin(host) && (listing.getHost() == null || !listing.getHost().getId().equals(host.getId()));
         validateOwnership(listing, host);
 
         ListingPhoto photo = listingPhotoRepository.findByIdAndListingId(photoId, listingId)
@@ -173,6 +208,11 @@ public class ListingServiceImpl implements ListingService {
         listing.getPhotos().remove(photo);
         listingPhotoRepository.delete(photo);
         storageService.delete(photo.getPath());
+        
+        if (isAdminAction) {
+            auditService.logAdminAction(host, "LISTING_PHOTO_DELETE", "Listing", listingId, 
+                    String.format("Admin deleted photo %d from listing '%s'", photoId, listing.getTitle()));
+        }
     }
 
     private ListingResponse toResponse(Listing listing, boolean favorite) {
@@ -195,6 +235,10 @@ public class ListingServiceImpl implements ListingService {
     }
 
     private void validateOwnership(Listing listing, User host) {
+        // ADMIN can bypass ownership checks
+        if (SecurityUtils.canBypassOwnership(host)) {
+            return;
+        }
         if (listing.getHost() == null || !listing.getHost().getId().equals(host.getId())) {
             throw new BadRequestException("You are not allowed to modify this listing");
         }

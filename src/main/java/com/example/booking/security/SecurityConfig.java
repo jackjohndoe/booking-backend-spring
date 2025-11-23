@@ -36,6 +36,8 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/**", "/api/health/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/listings/*/reviews/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/files/**").permitAll()
+                        // Swagger/OpenAPI endpoints
+                        .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**", "/api-docs/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))

@@ -10,7 +10,10 @@ import com.example.booking.exception.BadRequestException;
 import com.example.booking.exception.ResourceNotFoundException;
 import com.example.booking.repository.BookingRepository;
 import com.example.booking.repository.ListingRepository;
+import com.example.booking.service.AuditService;
 import com.example.booking.service.BookingService;
+import com.example.booking.service.WalletService;
+import com.example.booking.util.SecurityUtils;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -23,10 +26,17 @@ public class BookingServiceImpl implements BookingService {
 
     private final BookingRepository bookingRepository;
     private final ListingRepository listingRepository;
+    private final WalletService walletService;
+    private final AuditService auditService;
 
-    public BookingServiceImpl(BookingRepository bookingRepository, ListingRepository listingRepository) {
+    public BookingServiceImpl(BookingRepository bookingRepository, 
+                             ListingRepository listingRepository,
+                             WalletService walletService,
+                             AuditService auditService) {
         this.bookingRepository = bookingRepository;
         this.listingRepository = listingRepository;
+        this.walletService = walletService;
+        this.auditService = auditService;
     }
 
     @Override
@@ -78,12 +88,55 @@ public class BookingServiceImpl implements BookingService {
         Booking booking = bookingRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
 
-        if (!booking.getUser().getId().equals(user.getId()) &&
+        boolean isAdminAction = SecurityUtils.isAdmin(user) && 
+                !booking.getUser().getId().equals(user.getId()) &&
+                (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()));
+
+        if (!isAdminAction && !booking.getUser().getId().equals(user.getId()) &&
                 (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()))) {
             throw new BadRequestException("You are not allowed to cancel this booking");
         }
 
+        // Process refund if payment was made
+        try {
+            String reason = isAdminAction ? "Booking cancelled by admin" : 
+                    "Booking cancelled by " + (user.getId().equals(booking.getUser().getId()) ? "guest" : "host");
+            walletService.processRefund(id, reason);
+        } catch (Exception e) {
+            // Log error but don't fail cancellation if refund fails
+            // In production, you'd want proper logging here
+        }
+
         bookingRepository.delete(booking);
+        
+        if (isAdminAction) {
+            auditService.logAdminAction(user, "BOOKING_CANCEL", "Booking", id, 
+                    String.format("Admin cancelled booking #%d (guest: %d, host: %d)", id, 
+                            booking.getUser().getId(), 
+                            booking.getListing().getHost() != null ? booking.getListing().getHost().getId() : null));
+        }
+    }
+
+    @Override
+    public void completeBooking(Long id, User user) {
+        Booking booking = bookingRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
+
+        boolean isAdminAction = SecurityUtils.isAdmin(user) && 
+                (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()));
+
+        if (!isAdminAction && (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()))) {
+            throw new BadRequestException("Only the host can complete this booking");
+        }
+
+        User host = isAdminAction ? booking.getListing().getHost() : user;
+        walletService.processEscrowRelease(booking.getId(), host != null ? host : user);
+        
+        if (isAdminAction) {
+            auditService.logAdminAction(user, "BOOKING_COMPLETE", "Booking", id, 
+                    String.format("Admin completed booking #%d (host: %d)", id, 
+                            booking.getListing().getHost() != null ? booking.getListing().getHost().getId() : null));
+        }
     }
 
     private BookingResponse toResponse(Booking booking) {

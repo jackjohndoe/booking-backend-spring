@@ -10,7 +10,9 @@ import com.example.booking.exception.ResourceNotFoundException;
 import com.example.booking.repository.BookingRepository;
 import com.example.booking.repository.ListingRepository;
 import com.example.booking.repository.ReviewRepository;
+import com.example.booking.service.AuditService;
 import com.example.booking.service.ReviewService;
+import com.example.booking.util.SecurityUtils;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -23,13 +25,16 @@ public class ReviewServiceImpl implements ReviewService {
     private final ReviewRepository reviewRepository;
     private final ListingRepository listingRepository;
     private final BookingRepository bookingRepository;
+    private final AuditService auditService;
 
     public ReviewServiceImpl(ReviewRepository reviewRepository,
                              ListingRepository listingRepository,
-                             BookingRepository bookingRepository) {
+                             BookingRepository bookingRepository,
+                             AuditService auditService) {
         this.reviewRepository = reviewRepository;
         this.listingRepository = listingRepository;
         this.bookingRepository = bookingRepository;
+        this.auditService = auditService;
     }
 
     @Override
@@ -61,7 +66,9 @@ public class ReviewServiceImpl implements ReviewService {
         Review review = reviewRepository.findById(reviewId)
                 .orElseThrow(() -> new ResourceNotFoundException("Review not found with id: " + reviewId));
 
-        if (!review.getUser().getId().equals(user.getId())) {
+        boolean isAdminAction = SecurityUtils.isAdmin(user) && !review.getUser().getId().equals(user.getId());
+
+        if (!isAdminAction && !review.getUser().getId().equals(user.getId())) {
             throw new BadRequestException("You can only update your own review");
         }
 
@@ -70,6 +77,13 @@ public class ReviewServiceImpl implements ReviewService {
 
         Review saved = reviewRepository.save(review);
         updateListingAggregates(review.getListing());
+        
+        if (isAdminAction) {
+            auditService.logAdminAction(user, "REVIEW_UPDATE", "Review", reviewId, 
+                    String.format("Admin updated review #%d (author: %d, listing: %d)", reviewId, 
+                            review.getUser().getId(), review.getListing().getId()));
+        }
+        
         return toResponse(saved);
     }
 
@@ -78,14 +92,26 @@ public class ReviewServiceImpl implements ReviewService {
         Review review = reviewRepository.findById(reviewId)
                 .orElseThrow(() -> new ResourceNotFoundException("Review not found with id: " + reviewId));
 
-        if (!review.getUser().getId().equals(user.getId()) &&
+        boolean isAdminAction = SecurityUtils.isAdmin(user) && 
+                !review.getUser().getId().equals(user.getId()) &&
+                (review.getListing().getHost() == null || !review.getListing().getHost().getId().equals(user.getId()));
+
+        if (!isAdminAction && !review.getUser().getId().equals(user.getId()) &&
                 (review.getListing().getHost() == null || !review.getListing().getHost().getId().equals(user.getId()))) {
             throw new BadRequestException("You are not allowed to delete this review");
         }
 
         Listing listing = review.getListing();
+        Long authorId = review.getUser().getId();
+        Long listingId = listing.getId();
+        
         reviewRepository.delete(review);
         updateListingAggregates(listing);
+        
+        if (isAdminAction) {
+            auditService.logAdminAction(user, "REVIEW_DELETE", "Review", reviewId, 
+                    String.format("Admin deleted review #%d (author: %d, listing: %d)", reviewId, authorId, listingId));
+        }
     }
 
     @Override
