@@ -20,7 +20,8 @@ public class OpenApiConfig {
         return new OpenAPI()
                 .info(new Info()
                         .title("Booking API")
-                        .description("REST API for apartment booking platform with wallet and payment features")
+                        .description("REST API for apartment booking platform with wallet and payment features. " +
+                                "User roles: GUEST (can book listings) and HOST (can create and manage listings).")
                         .version("1.0.0")
                         .contact(new Contact()
                                 .name("Booking API Support")
