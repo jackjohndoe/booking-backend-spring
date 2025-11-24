@@ -2,6 +2,8 @@
 
 This document provides everything your frontend team needs to integrate with the Booking API.
 
+> **📱 React Native?** See [REACT_NATIVE_INTEGRATION.md](./REACT_NATIVE_INTEGRATION.md) for React Native-specific integration guide with complete examples.
+
 ## 🚀 Quick Start
 
 ### API Base URL
