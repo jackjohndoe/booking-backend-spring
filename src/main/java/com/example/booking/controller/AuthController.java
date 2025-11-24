@@ -28,7 +28,9 @@ public class AuthController {
         this.authService = authService;
     }
 
-    @Operation(summary = "Register a new user", description = "Creates a new user account and returns authentication token")
+    @Operation(summary = "Register a new user", 
+            description = "Creates a new user account and returns authentication token. " +
+                    "Allowed roles: GUEST (can book listings) or HOST (can create and manage listings).")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "200", description = "User registered successfully",
                     content = @Content(schema = @Schema(implementation = AuthResponse.class))),
