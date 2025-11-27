@@ -73,7 +73,8 @@ public class ListingServiceImpl implements ListingService {
     @Override
     public ListingResponse updateListing(Long id, ListingRequest request, User host) {
         Listing listing = listingRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with ID: " + id + 
+                        ". The listing may have been deleted or the ID may be incorrect."));
 
         boolean isAdminAction = SecurityUtils.isAdmin(host) && !listing.getHost().getId().equals(host.getId());
         validateOwnership(listing, host);
@@ -99,7 +100,8 @@ public class ListingServiceImpl implements ListingService {
     @Override
     public void deleteListing(Long id, User host) {
         Listing listing = listingRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with ID: " + id + 
+                        ". The listing may have been deleted or the ID may be incorrect."));
         
         boolean isAdminAction = SecurityUtils.isAdmin(host) && (listing.getHost() == null || !listing.getHost().getId().equals(host.getId()));
         String listingTitle = listing.getTitle();
@@ -121,7 +123,8 @@ public class ListingServiceImpl implements ListingService {
     @Override
     public ListingResponse getListing(Long id, User currentUser) {
         Listing listing = listingRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with ID: " + id + 
+                        ". The listing may have been deleted or the ID may be incorrect."));
         boolean favorite = currentUser != null &&
                 favoriteRepository.existsByUserIdAndListingId(currentUser.getId(), listing.getId());
         return toResponse(listing, favorite);
@@ -164,7 +167,7 @@ public class ListingServiceImpl implements ListingService {
         validateOwnership(listing, host);
 
         if (files == null || files.isEmpty()) {
-            throw new BadRequestException("No files provided");
+            throw new BadRequestException("No image files provided. Please upload at least one image file (JPG, PNG, etc.) to add photos to your listing.");
         }
 
         Set<String> urls = new LinkedHashSet<>();
@@ -183,7 +186,7 @@ public class ListingServiceImpl implements ListingService {
         }
 
         if (urls.isEmpty()) {
-            throw new BadRequestException("No valid files provided");
+            throw new BadRequestException("No valid image files were processed. Please ensure you're uploading valid image files (JPG, PNG, etc.) and that the files are not empty or corrupted.");
         }
 
         if (isAdminAction) {
@@ -203,7 +206,8 @@ public class ListingServiceImpl implements ListingService {
         validateOwnership(listing, host);
 
         ListingPhoto photo = listingPhotoRepository.findByIdAndListingId(photoId, listingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Photo not found with id: " + photoId));
+                .orElseThrow(() -> new ResourceNotFoundException("Photo not found with ID: " + photoId + 
+                        " for listing ID: " + listingId + ". The photo may have been deleted or the ID may be incorrect."));
 
         listing.getPhotos().remove(photo);
         listingPhotoRepository.delete(photo);
@@ -240,19 +244,22 @@ public class ListingServiceImpl implements ListingService {
             return;
         }
         if (listing.getHost() == null || !listing.getHost().getId().equals(host.getId())) {
-            throw new BadRequestException("You are not allowed to modify this listing");
+            throw new BadRequestException("You do not have permission to modify this listing. " +
+                    "Only the listing owner or an administrator can make changes to a listing.");
         }
     }
 
     private void validateDateRange(LocalDate startDate, LocalDate endDate) {
         if (startDate != null && endDate != null && endDate.isBefore(startDate)) {
-            throw new BadRequestException("End date must be after start date");
+            throw new BadRequestException("Invalid date range: The end date must be after the start date. " +
+                    "Please select a valid date range for your search.");
         }
     }
 
     private void validatePriceRange(BigDecimal minPrice, BigDecimal maxPrice) {
         if (minPrice != null && maxPrice != null && maxPrice.compareTo(minPrice) < 0) {
-            throw new BadRequestException("Max price must be greater than or equal to min price");
+            throw new BadRequestException("Invalid price range: The maximum price (" + maxPrice + 
+                    ") must be greater than or equal to the minimum price (" + minPrice + "). Please adjust your price filter.");
         }
     }
 
@@ -281,7 +288,8 @@ public class ListingServiceImpl implements ListingService {
             try {
                 result.add(Enum.valueOf(enumType, normalized));
             } catch (IllegalArgumentException ex) {
-                throw new BadRequestException("Invalid " + fieldName + " value: " + raw);
+                throw new BadRequestException("Invalid " + fieldName + " value: '" + raw + 
+                        "'. Please check the allowed values for " + fieldName + " and try again.");
             }
         }
         return result;

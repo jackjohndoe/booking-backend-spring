@@ -37,10 +37,12 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     public PaymentIntentResponse processBookingPayment(PaymentRequest request, User user) {
         Booking booking = bookingRepository.findById(request.getBookingId())
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + request.getBookingId()));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + request.getBookingId() + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
 
         if (!booking.getUser().getId().equals(user.getId())) {
-            throw new BadRequestException("You can only pay for your own bookings");
+            throw new BadRequestException("You can only make payments for your own bookings. " +
+                    "This booking belongs to a different user.");
         }
 
         if (request.isUseWallet()) {
@@ -95,11 +97,13 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     public PaymentIntentResponse refundBooking(Long bookingId, String reason, User user) {
         Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
 
         if (!booking.getUser().getId().equals(user.getId()) && 
             (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()))) {
-            throw new BadRequestException("You are not authorized to refund this booking");
+            throw new BadRequestException("You are not authorized to process a refund for this booking. " +
+                    "Only the guest who made the booking, the listing host, or an administrator can process refunds.");
         }
 
         walletService.processRefund(bookingId, reason);

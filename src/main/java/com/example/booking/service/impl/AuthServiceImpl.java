@@ -51,11 +51,13 @@ public class AuthServiceImpl implements AuthService {
                     new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword())
             );
         } catch (AuthenticationException ex) {
-            throw new BadRequestException("Invalid credentials");
+            throw new BadRequestException("Invalid email or password. Please check your credentials and try again. " +
+                    "If you've forgotten your password, please use the password reset feature.");
         }
 
         User user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> new BadRequestException("User not found with email: " + request.getEmail()));
+                .orElseThrow(() -> new BadRequestException("User account not found with email: " + request.getEmail() + 
+                        ". Please verify the email address or register a new account."));
 
         String token = jwtService.generateToken(user);
         return AuthResponse.builder()

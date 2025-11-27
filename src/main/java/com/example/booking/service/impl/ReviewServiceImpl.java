@@ -40,14 +40,17 @@ public class ReviewServiceImpl implements ReviewService {
     @Override
     public ReviewResponse createReview(Long listingId, ReviewRequest request, User user) {
         Listing listing = listingRepository.findById(listingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + listingId));
+                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with ID: " + listingId + 
+                        ". The listing may have been deleted or the ID may be incorrect."));
 
         if (!bookingRepository.existsByListingIdAndUserId(listingId, user.getId())) {
-            throw new BadRequestException("You can only review listings you have booked");
+            throw new BadRequestException("You can only review listings that you have booked. " +
+                    "Please complete a booking for this listing before submitting a review.");
         }
 
         reviewRepository.findByListingIdAndUserId(listingId, user.getId())
-                .ifPresent(review -> { throw new BadRequestException("You have already reviewed this listing"); });
+                .ifPresent(review -> { throw new BadRequestException("You have already submitted a review for this listing. " +
+                        "You can update your existing review instead of creating a new one."); });
 
         Review review = Review.builder()
                 .listing(listing)
@@ -64,12 +67,14 @@ public class ReviewServiceImpl implements ReviewService {
     @Override
     public ReviewResponse updateReview(Long reviewId, ReviewRequest request, User user) {
         Review review = reviewRepository.findById(reviewId)
-                .orElseThrow(() -> new ResourceNotFoundException("Review not found with id: " + reviewId));
+                .orElseThrow(() -> new ResourceNotFoundException("Review not found with ID: " + reviewId + 
+                        ". The review may have been deleted or the ID may be incorrect."));
 
         boolean isAdminAction = SecurityUtils.isAdmin(user) && !review.getUser().getId().equals(user.getId());
 
         if (!isAdminAction && !review.getUser().getId().equals(user.getId())) {
-            throw new BadRequestException("You can only update your own review");
+            throw new BadRequestException("You can only update your own reviews. " +
+                    "Only the review author or an administrator can modify a review.");
         }
 
         review.setRating(request.getRating());
@@ -90,7 +95,8 @@ public class ReviewServiceImpl implements ReviewService {
     @Override
     public void deleteReview(Long reviewId, User user) {
         Review review = reviewRepository.findById(reviewId)
-                .orElseThrow(() -> new ResourceNotFoundException("Review not found with id: " + reviewId));
+                .orElseThrow(() -> new ResourceNotFoundException("Review not found with ID: " + reviewId + 
+                        ". The review may have been deleted or the ID may be incorrect."));
 
         boolean isAdminAction = SecurityUtils.isAdmin(user) && 
                 !review.getUser().getId().equals(user.getId()) &&
@@ -98,7 +104,8 @@ public class ReviewServiceImpl implements ReviewService {
 
         if (!isAdminAction && !review.getUser().getId().equals(user.getId()) &&
                 (review.getListing().getHost() == null || !review.getListing().getHost().getId().equals(user.getId()))) {
-            throw new BadRequestException("You are not allowed to delete this review");
+            throw new BadRequestException("You do not have permission to delete this review. " +
+                    "Only the review author, the listing host, or an administrator can delete reviews.");
         }
 
         Listing listing = review.getListing();

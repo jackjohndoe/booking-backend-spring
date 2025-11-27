@@ -34,11 +34,13 @@ public class FavoriteServiceImpl implements FavoriteService {
     @Override
     public void addFavorite(Long listingId, User user) {
         if (favoriteRepository.existsByUserIdAndListingId(user.getId(), listingId)) {
-            throw new BadRequestException("Listing already in favorites");
+            throw new BadRequestException("This listing is already in your favorites. " +
+                    "You can view all your favorite listings in your favorites page.");
         }
 
         Listing listing = listingRepository.findById(listingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + listingId));
+                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with ID: " + listingId + 
+                        ". The listing may have been deleted or the ID may be incorrect."));
 
         Favorite favorite = Favorite.builder()
                 .listing(listing)
@@ -50,7 +52,8 @@ public class FavoriteServiceImpl implements FavoriteService {
     @Override
     public void removeFavorite(Long listingId, User user) {
         if (!favoriteRepository.existsByUserIdAndListingId(user.getId(), listingId)) {
-            throw new BadRequestException("Listing not in favorites");
+            throw new BadRequestException("This listing is not in your favorites. " +
+                    "You can only remove listings that are currently in your favorites list.");
         }
         favoriteRepository.deleteByUserIdAndListingId(user.getId(), listingId);
     }

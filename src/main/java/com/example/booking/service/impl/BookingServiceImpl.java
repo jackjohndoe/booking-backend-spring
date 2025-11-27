@@ -42,7 +42,8 @@ public class BookingServiceImpl implements BookingService {
     @Override
     public BookingResponse createBooking(BookingRequest request, User user) {
         Listing listing = listingRepository.findById(request.getListingId())
-                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with id: " + request.getListingId()));
+                .orElseThrow(() -> new ResourceNotFoundException("Listing not found with ID: " + request.getListingId() + 
+                        ". The listing may have been deleted or the ID may be incorrect."));
 
         validateDates(request.getStartDate(), request.getEndDate());
         validateAvailability(listing.getId(), request.getStartDate(), request.getEndDate());
@@ -61,7 +62,8 @@ public class BookingServiceImpl implements BookingService {
     @Override
     public BookingResponse getBooking(Long id) {
         Booking booking = bookingRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + id + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
         return toResponse(booking);
     }
 
@@ -77,7 +79,8 @@ public class BookingServiceImpl implements BookingService {
                 case "PAST" -> bookings = bookingRepository.findByUserIdAndEndDateBefore(userId, today, pageable);
                 case "UPCOMING" -> bookings = bookingRepository.findByUserIdAndStartDateAfter(userId, today, pageable);
                 case "CURRENT" -> bookings = bookingRepository.findByUserIdAndStartDateLessThanEqualAndEndDateGreaterThanEqual(userId, today, today, pageable);
-                default -> throw new BadRequestException("Invalid status. Allowed values: PAST, CURRENT, UPCOMING");
+                default -> throw new BadRequestException("Invalid booking status filter: '" + status + 
+                        "'. Allowed values are: PAST (completed bookings), CURRENT (ongoing bookings), or UPCOMING (future bookings).");
             }
         }
         return bookings.map(this::toResponse);
@@ -86,7 +89,8 @@ public class BookingServiceImpl implements BookingService {
     @Override
     public void cancelBooking(Long id, User user) {
         Booking booking = bookingRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + id + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
 
         boolean isAdminAction = SecurityUtils.isAdmin(user) && 
                 !booking.getUser().getId().equals(user.getId()) &&
@@ -94,7 +98,8 @@ public class BookingServiceImpl implements BookingService {
 
         if (!isAdminAction && !booking.getUser().getId().equals(user.getId()) &&
                 (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()))) {
-            throw new BadRequestException("You are not allowed to cancel this booking");
+            throw new BadRequestException("You do not have permission to cancel this booking. " +
+                    "Only the guest who made the booking, the listing host, or an administrator can cancel a booking.");
         }
 
         // Process refund if payment was made
@@ -120,13 +125,15 @@ public class BookingServiceImpl implements BookingService {
     @Override
     public void completeBooking(Long id, User user) {
         Booking booking = bookingRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + id + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
 
         boolean isAdminAction = SecurityUtils.isAdmin(user) && 
                 (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()));
 
         if (!isAdminAction && (booking.getListing().getHost() == null || !booking.getListing().getHost().getId().equals(user.getId()))) {
-            throw new BadRequestException("Only the host can complete this booking");
+            throw new BadRequestException("Only the listing host or an administrator can mark this booking as complete. " +
+                    "You must be the owner of the listing to perform this action.");
         }
 
         User host = isAdminAction ? booking.getListing().getHost() : user;
@@ -172,15 +179,17 @@ public class BookingServiceImpl implements BookingService {
     }
 
     private void validateDates(LocalDate startDate, LocalDate endDate) {
-        if (endDate.isBefore(startDate)) {
-            throw new BadRequestException("End date must be after start date");
+        if (endDate.isBefore(startDate) || endDate.equals(startDate)) {
+            throw new BadRequestException("The end date must be after the start date. " +
+                    "Please select a valid date range for your booking.");
         }
     }
 
     private void validateAvailability(Long listingId, LocalDate startDate, LocalDate endDate) {
         List<Booking> overlapping = bookingRepository.findOverlappingBookings(listingId, startDate, endDate);
         if (!overlapping.isEmpty()) {
-            throw new BadRequestException("Listing already booked for the selected dates");
+            throw new BadRequestException("The listing is already booked for the selected dates (" + 
+                    startDate + " to " + endDate + "). Please choose different dates or check the listing's availability calendar.");
         }
     }
 }

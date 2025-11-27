@@ -63,7 +63,8 @@ public class WalletServiceImpl implements WalletService {
     @Transactional(readOnly = true)
     public WalletResponse getWallet(User user) {
         Wallet wallet = walletRepository.findByUserId(user.getId())
-                .orElseThrow(() -> new ResourceNotFoundException("Wallet not found for user"));
+                .orElseThrow(() -> new ResourceNotFoundException("Wallet not found for your account. " +
+                        "Please contact support if you believe this is an error."));
         return toResponse(wallet);
     }
 
@@ -92,7 +93,9 @@ public class WalletServiceImpl implements WalletService {
         PaymentIntentResponse confirmed = paymentProvider.confirmPaymentIntent(paymentResponse.getPaymentIntentId());
 
         if (!"succeeded".equals(confirmed.getStatus())) {
-            throw new BadRequestException("Payment failed: " + confirmed.getFailureReason());
+            String reason = confirmed.getFailureReason() != null ? confirmed.getFailureReason() : "Unknown error";
+            throw new BadRequestException("Payment processing failed: " + reason + 
+                    ". Please check your payment method and try again, or contact support if the issue persists.");
         }
 
         Transaction transaction = Transaction.builder()
@@ -119,10 +122,13 @@ public class WalletServiceImpl implements WalletService {
     @Override
     public TransactionResponse withdraw(WithdrawalRequest request, User user) {
         Wallet wallet = walletRepository.findByUserIdWithLock(user.getId())
-                .orElseThrow(() -> new ResourceNotFoundException("Wallet not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Wallet not found for your account. " +
+                        "Please contact support if you believe this is an error."));
 
         if (wallet.getBalance().compareTo(request.getAmount()) < 0) {
-            throw new BadRequestException("Insufficient balance");
+            throw new BadRequestException("Insufficient wallet balance. Your current balance is " + 
+                    wallet.getBalance() + " " + wallet.getCurrency() + ", but you attempted to withdraw " + 
+                    request.getAmount() + " " + wallet.getCurrency() + ". Please deposit funds or adjust the withdrawal amount.");
         }
 
         PayoutRequest payoutRequest = PayoutRequest.builder()
@@ -171,14 +177,17 @@ public class WalletServiceImpl implements WalletService {
     @Override
     public void processEscrowHold(Long bookingId, BigDecimal amount, User user) {
         Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
 
         Wallet wallet = walletRepository.findByUserIdWithLock(user.getId()).orElse(null);
         boolean isWalletPayment = wallet != null;
 
         if (isWalletPayment) {
             if (wallet.getBalance().compareTo(amount) < 0) {
-                throw new BadRequestException("Insufficient wallet balance for escrow");
+                throw new BadRequestException("Insufficient wallet balance for escrow. Your current balance is " + 
+                        wallet.getBalance() + " " + wallet.getCurrency() + ", but the booking requires " + 
+                        amount + " " + wallet.getCurrency() + ". Please deposit funds to your wallet or use a different payment method.");
             }
             wallet.setBalance(wallet.getBalance().subtract(amount));
             walletRepository.save(wallet);
@@ -203,10 +212,12 @@ public class WalletServiceImpl implements WalletService {
     @Override
     public void processEscrowRelease(Long bookingId, User host) {
         Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
 
         Transaction escrowHold = transactionRepository.findByBookingIdAndType(bookingId, Transaction.Type.ESCROW_HOLD)
-                .orElseThrow(() -> new BadRequestException("Escrow hold not found for booking"));
+                .orElseThrow(() -> new BadRequestException("Escrow hold not found for booking ID: " + bookingId + 
+                        ". The payment may not have been processed yet, or the booking may not have an active escrow hold."));
 
         Wallet hostWallet = walletRepository.findByUserIdWithLock(host.getId())
                 .orElseGet(() -> {
@@ -259,7 +270,8 @@ public class WalletServiceImpl implements WalletService {
     @Override
     public void processRefund(Long bookingId, String reason) {
         Booking booking = bookingRepository.findById(bookingId)
-                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found with ID: " + bookingId + 
+                        ". The booking may have been cancelled or deleted, or the ID may be incorrect."));
 
         Transaction escrowHold = transactionRepository.findByBookingIdAndType(bookingId, Transaction.Type.ESCROW_HOLD)
                 .orElse(null);

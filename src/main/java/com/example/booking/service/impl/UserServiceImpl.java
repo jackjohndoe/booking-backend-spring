@@ -29,14 +29,16 @@ public class UserServiceImpl implements UserService {
     @Override
     public User registerUser(RegisterRequest registerRequest) {
         if (userRepository.existsByEmail(registerRequest.getEmail())) {
-            throw new BadRequestException("Email already in use");
+            throw new BadRequestException("An account with the email address '" + registerRequest.getEmail() + 
+                    "' already exists. Please use a different email address or try logging in instead.");
         }
 
         User.Role role;
         try {
             role = User.Role.valueOf(registerRequest.getRole().toUpperCase());
         } catch (IllegalArgumentException | NullPointerException ex) {
-            throw new BadRequestException("Invalid role. Allowed values: GUEST, HOST, ADMIN");
+            throw new BadRequestException("Invalid role specified: '" + registerRequest.getRole() + 
+                    "'. Allowed values are: GUEST (for booking listings), HOST (for creating and managing listings), or ADMIN (for administrative access).");
         }
 
         User user = User.builder()
@@ -53,20 +55,23 @@ public class UserServiceImpl implements UserService {
     @Override
     public User findByEmail(String email) {
         return userRepository.findByEmail(email)
-                .orElseThrow(() -> new BadRequestException("User not found with email: " + email));
+                .orElseThrow(() -> new BadRequestException("User account not found with email: " + email + 
+                        ". Please verify the email address is correct."));
     }
 
     @Override
     public UserProfileResponse getProfile(Long userId) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + userId));
+                .orElseThrow(() -> new ResourceNotFoundException("User profile not found with ID: " + userId + 
+                        ". The user may have been deleted or the ID may be incorrect."));
         return toProfileResponse(user);
     }
 
     @Override
     public UserProfileResponse updateProfile(Long userId, UserProfileUpdateRequest request) {
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + userId));
+                .orElseThrow(() -> new ResourceNotFoundException("User profile not found with ID: " + userId + 
+                        ". The user may have been deleted or the ID may be incorrect."));
 
         user.setName(request.getName());
         user.setPhone(request.getPhone());
@@ -79,10 +84,11 @@ public class UserServiceImpl implements UserService {
     @Override
     public UserProfileResponse updateAvatar(Long userId, MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new BadRequestException("Avatar file is required");
+            throw new BadRequestException("Avatar file is required. Please provide a valid image file (JPG, PNG, etc.) to update your profile picture.");
         }
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + userId));
+                .orElseThrow(() -> new ResourceNotFoundException("User profile not found with ID: " + userId + 
+                        ". The user may have been deleted or the ID may be incorrect."));
 
         String path = storageService.store(file, "avatars/" + userId);
         user.setAvatarUrl(storageService.resolveUrl(path));
