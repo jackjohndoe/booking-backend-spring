@@ -1,0 +1,15 @@
+{
+  "ignore_dirs": [
+    "AppData",
+    "AppData/Local",
+    "AppData/Local/Temp",
+    "AppData\\Local\\Temp",
+    "node_modules",
+    ".git",
+    ".expo",
+    "Temp",
+    "tmp"
+  ],
+  "settle": 20
+}
+

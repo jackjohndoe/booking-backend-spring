@@ -1,0 +1,42 @@
+# Spring Boot Application Configuration (YAML format)
+# Add this file to: src/main/resources/application.yml
+# Use either application.properties OR application.yml, not both
+
+server:
+  port: ${PORT:8080}
+
+spring:
+  # Static Resource Configuration - Fix for "No static resource api/apartments" error
+  web:
+    resources:
+      # Option 1: Disable static resource mapping for API paths
+      add-mappings: false
+    cors:
+      # CORS Configuration
+      allowed-origins: "*"
+      allowed-methods: GET,POST,PUT,DELETE,OPTIONS
+      allowed-headers: "*"
+  
+  # Database Configuration (if using database)
+  # datasource:
+  #   url: ${DATABASE_URL}
+  #   username: ${DATABASE_USERNAME}
+  #   password: ${DATABASE_PASSWORD}
+  
+  # JPA Configuration (if using JPA)
+  # jpa:
+  #   hibernate:
+  #     ddl-auto: update
+  #   show-sql: false
+
+# Paystack Configuration
+paystack:
+  secret-key: ${PAYSTACK_SECRET_KEY}
+  public-key: ${PAYSTACK_PUBLIC_KEY}
+
+# Logging
+logging:
+  level:
+    com.yourpackage: DEBUG
+    org.springframework.web: DEBUG
+

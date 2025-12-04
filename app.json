@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "Nigerian Apartments",
+    "slug": "nigerian-apartments-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#FFD700"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.nigerianapartments.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FFD700"
+      },
+      "package": "com.nigerianapartments.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "scheme": "nigerianapartments",
+    "plugins": [
+      "expo-dev-client",
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app accesses your photos to let you set your profile picture.",
+          "cameraPermission": "The app accesses your camera to let you take a profile picture."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#FFD700",
+          "sounds": [],
+          "mode": "production"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2daf5ed9-4c43-4f7a-a6a8-ff18b325a97e"
+      }
+    },
+    "owner": "michaelkaysea"
+  }
+}

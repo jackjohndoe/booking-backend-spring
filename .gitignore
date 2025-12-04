@@ -1,0 +1,30 @@
+node_modules/
+.expo/
+.expo-shared/
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+dist/
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+
+
+sendgrid.env
+
+# Exclude AppData and Android Studio files
+AppData/
+.idea/
+*.iml
+

@@ -1,0 +1,33 @@
+# EAS Build ignore file
+# Files and directories to exclude from EAS builds
+
+# System directories
+AppData/
+Local/
+Temp/
+Cookies/
+NetHood/
+My Documents/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.iml
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Build artifacts
+android/app/build/
+android/build/
+ios/build/
+
+# Node modules (already in .gitignore but being explicit)
+node_modules/
+
