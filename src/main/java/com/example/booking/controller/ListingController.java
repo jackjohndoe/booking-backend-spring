@@ -143,7 +143,7 @@ public class ListingController {
     @PostMapping("/{id}/photos")
     public ResponseEntity<Set<String>> addPhotos(
             @Parameter(description = "Listing ID") @PathVariable Long id,
-            @Parameter(description = "Photo files to upload") @RequestParam("files") List<MultipartFile> files,
+            @Parameter(description = "Photo files to upload") @RequestParam(name = "files") List<MultipartFile> files,
             @AuthenticationPrincipal BookingUserDetails userDetails) {
         return ResponseEntity.ok(listingService.addPhotos(id, userDetails.getUser(), files));
     }

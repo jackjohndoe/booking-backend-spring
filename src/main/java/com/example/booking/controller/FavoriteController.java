@@ -64,8 +64,8 @@ public class FavoriteController {
     @SecurityRequirement(name = "bearerAuth")
     @GetMapping
     public ResponseEntity<PageResponse<ListingResponse>> getFavorites(
-            @Parameter(description = "Page number (0-indexed)") @RequestParam(defaultValue = "0") int page,
-            @Parameter(description = "Page size") @RequestParam(defaultValue = "10") int size,
+            @Parameter(description = "Page number (0-indexed)") @RequestParam(defaultValue = "0", name = "page") int page,
+            @Parameter(description = "Page size") @RequestParam(defaultValue = "10", name = "size") int size,
             @AuthenticationPrincipal BookingUserDetails userDetails) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(PageResponse.from(favoriteService.getFavorites(userDetails.getUser(), pageable)));

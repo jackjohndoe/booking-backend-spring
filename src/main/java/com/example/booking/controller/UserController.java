@@ -65,7 +65,7 @@ public class UserController {
     @SecurityRequirement(name = "bearerAuth")
     @PostMapping("/avatar")
     public ResponseEntity<UserProfileResponse> updateAvatar(@AuthenticationPrincipal BookingUserDetails userDetails,
-                                                            @RequestParam("file") MultipartFile file) {
+                                                            @RequestParam(name = "file") MultipartFile file) {
         return ResponseEntity.ok(userService.updateAvatar(userDetails.getUser().getId(), file));
     }
 }

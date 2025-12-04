@@ -8,6 +8,7 @@ import com.example.booking.dto.wallet.WithdrawalRequest;
 import com.example.booking.security.BookingUserDetails;
 import com.example.booking.service.WalletService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -74,8 +75,8 @@ public class WalletController {
     @GetMapping("/transactions")
     public ResponseEntity<PageResponse<TransactionResponse>> getTransactions(
             @AuthenticationPrincipal BookingUserDetails userDetails,
-            @RequestParam(name = "page", defaultValue = "0") int page,
-            @RequestParam(name = "size", defaultValue = "20") int size) {
+            @Parameter(description = "Page number (0-indexed)") @RequestParam(name = "page", defaultValue = "0") int page,
+            @Parameter(description = "Page size") @RequestParam(name = "size", defaultValue = "20") int size) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(PageResponse.from(walletService.getTransactions(userDetails.getUser(), pageable)));
     }

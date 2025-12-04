@@ -56,7 +56,7 @@ public class PaymentController {
     @PostMapping("/booking/{bookingId}/refund")
     public ResponseEntity<PaymentIntentResponse> refundBooking(
             @Parameter(description = "Booking ID") @PathVariable Long bookingId,
-            @Parameter(description = "Refund reason") @RequestParam(required = false) String reason,
+            @Parameter(description = "Refund reason") @RequestParam(name = "reason", required = false) String reason,
             @AuthenticationPrincipal BookingUserDetails userDetails) {
         return ResponseEntity.ok(paymentService.refundBooking(bookingId, reason, userDetails.getUser()));
     }
