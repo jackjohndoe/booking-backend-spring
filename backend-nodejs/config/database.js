@@ -29,7 +29,7 @@ if (databaseUrl && databaseUrl.trim() !== '') {
       // Railway PostgreSQL requires SSL in production
       const needsSSL = process.env.NODE_ENV === 'production' || isSupabase || isRailway;
       
-      if (isRailway && __DEV__) {
+      if (isRailway && process.env.NODE_ENV === 'development') {
         console.log('🔍 Railway database detected - SSL will be enabled');
       }
       

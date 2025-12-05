@@ -99,10 +99,16 @@ const startServer = async () => {
   let dbConnected = false;
   
   // Try to connect to database, but don't fail if it's not available
+  // This ensures the server can start even if database is not ready
   try {
-    await sequelize.authenticate();
-    console.log('✅ Database connection established');
-    dbConnected = true;
+    if (!sequelize) {
+      console.warn('⚠️  Sequelize instance not initialized');
+      console.warn('⚠️  Database connection will be skipped');
+    } else {
+      await sequelize.authenticate();
+      console.log('✅ Database connection established');
+      dbConnected = true;
+    }
 
     // Sync database (create tables if they don't exist)
     // In production, use migrations instead
