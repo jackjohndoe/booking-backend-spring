@@ -93,17 +93,30 @@ app.use('/api/email', require('./routes/email'));
 // Health check
 app.get('/health', async (req, res) => {
   let dbStatus = 'unknown';
+  let flutterwaveStatus = 'unknown';
+  
   try {
-    await sequelize.authenticate();
-    dbStatus = 'connected';
+    if (sequelize) {
+      await sequelize.authenticate();
+      dbStatus = 'connected';
+    } else {
+      dbStatus = 'not_initialized';
+    }
   } catch (error) {
     dbStatus = 'disconnected';
   }
+  
+  // Check Flutterwave configuration
+  const hasFlutterwaveKey = process.env.FLUTTERWAVE_SECRET_KEY && 
+                            process.env.FLUTTERWAVE_SECRET_KEY.trim() !== '';
+  flutterwaveStatus = hasFlutterwaveKey ? 'configured' : 'not_configured';
   
   res.json({ 
     status: 'ok', 
     message: 'Backend is running',
     database: dbStatus,
+    flutterwave: flutterwaveStatus,
+    environment: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString()
   });
 });
