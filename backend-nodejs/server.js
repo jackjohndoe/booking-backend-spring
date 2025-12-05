@@ -108,28 +108,31 @@ const startServer = async () => {
       await sequelize.authenticate();
       console.log('✅ Database connection established');
       dbConnected = true;
-    }
 
-    // Sync database (create tables if they don't exist)
-    // In production, use migrations instead
-    // On Railway, allow sync for initial setup (can be disabled later)
-    const isRailway = process.env.RAILWAY_ENVIRONMENT === 'true' || 
-                     process.env.RAILWAY === 'true' ||
-                     process.env.DATABASE_URL?.includes('railway');
-    const shouldSync = process.env.NODE_ENV !== 'production' || 
-                      process.env.RAILWAY_SYNC_DB === 'true' ||
-                      (isRailway && process.env.RAILWAY_SYNC_DB !== 'false');
-    
-    if (shouldSync) {
-      try {
-        await sequelize.sync({ alter: true });
-        console.log('✅ Database synced');
-      } catch (syncError) {
-        console.warn('⚠️  Database sync warning:', syncError.message);
-        // Don't fail startup if sync has issues
+      // Sync database (create tables if they don't exist)
+      // In production, use migrations instead
+      // On Railway, allow sync for initial setup (can be disabled later)
+      const isRailway = process.env.RAILWAY_ENVIRONMENT === 'true' || 
+                       process.env.RAILWAY === 'true' ||
+                       process.env.RAILWAY_SERVICE_NAME ||
+                       (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway'));
+      const shouldSync = process.env.NODE_ENV !== 'production' || 
+                        process.env.RAILWAY_SYNC_DB === 'true' ||
+                        (isRailway && process.env.RAILWAY_SYNC_DB !== 'false');
+      
+      if (shouldSync && dbConnected) {
+        try {
+          await sequelize.sync({ alter: true });
+          console.log('✅ Database synced');
+        } catch (syncError) {
+          console.warn('⚠️  Database sync warning:', syncError.message);
+          // Don't fail startup if sync has issues
+        }
+      } else if (!dbConnected) {
+        console.log('ℹ️  Database sync skipped (database not connected)');
+      } else {
+        console.log('ℹ️  Database sync skipped (production mode)');
       }
-    } else {
-      console.log('ℹ️  Database sync skipped (production mode)');
     }
   } catch (dbError) {
     console.warn('⚠️  Database connection failed:', dbError.message);
