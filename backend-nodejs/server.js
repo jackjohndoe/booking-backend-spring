@@ -107,10 +107,21 @@ const startServer = async () => {
     // Sync database (create tables if they don't exist)
     // In production, use migrations instead
     // On Railway, allow sync for initial setup (can be disabled later)
-    const shouldSync = process.env.NODE_ENV !== 'production' || process.env.RAILWAY_SYNC_DB === 'true';
+    const isRailway = process.env.RAILWAY_ENVIRONMENT === 'true' || 
+                     process.env.RAILWAY === 'true' ||
+                     process.env.DATABASE_URL?.includes('railway');
+    const shouldSync = process.env.NODE_ENV !== 'production' || 
+                      process.env.RAILWAY_SYNC_DB === 'true' ||
+                      (isRailway && process.env.RAILWAY_SYNC_DB !== 'false');
+    
     if (shouldSync) {
-      await sequelize.sync({ alter: true });
-      console.log('✅ Database synced');
+      try {
+        await sequelize.sync({ alter: true });
+        console.log('✅ Database synced');
+      } catch (syncError) {
+        console.warn('⚠️  Database sync warning:', syncError.message);
+        // Don't fail startup if sync has issues
+      }
     } else {
       console.log('ℹ️  Database sync skipped (production mode)');
     }

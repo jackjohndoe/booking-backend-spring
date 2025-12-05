@@ -1,0 +1,15 @@
+# Nixpacks configuration for Railway
+# This ensures proper Node.js version and build process
+
+[phases.setup]
+nixPkgs = ["nodejs-18_x", "npm"]
+
+[phases.install]
+cmds = ["npm ci --production=false"]
+
+[phases.build]
+cmds = ["echo 'Build phase complete'"]
+
+[start]
+cmd = "npm start"
+
