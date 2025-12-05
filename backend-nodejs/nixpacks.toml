@@ -2,10 +2,10 @@
 # Railway will use this for build configuration
 
 [phases.setup]
-nixPkgs = ["nodejs-18_x"]
+nixPkgs = ["nodejs-18_x", "npm"]
 
 [phases.install]
-cmds = ["npm install"]
+cmds = ["npm install --production=false"]
 
 [phases.build]
 cmds = ["echo 'Build complete'"]

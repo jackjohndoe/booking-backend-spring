@@ -8,6 +8,23 @@ require('./models');
 // Load environment variables
 dotenv.config();
 
+// Handle uncaught exceptions and unhandled promise rejections
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  // Don't exit in production, let Railway handle it
+  if (process.env.NODE_ENV !== 'production') {
+    process.exit(1);
+  }
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+  // Don't exit in production, let Railway handle it
+  if (process.env.NODE_ENV !== 'production') {
+    process.exit(1);
+  }
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
