@@ -1,0 +1,160 @@
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const { sequelize } = require('./config/database');
+// Import models to establish relationships
+require('./models');
+
+// Load environment variables
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+// CORS configuration - explicitly allow localhost:8081 for Expo web
+const allowedOrigins = process.env.CORS_ORIGIN 
+  ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
+  : ['http://localhost:8081', 'http://localhost:19006', 'http://localhost:3000', '*'];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    // If wildcard is in allowed origins, allow all
+    if (allowedOrigins.includes('*')) {
+      return callback(null, true);
+    }
+    
+    // Check if origin is in allowed list
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Log all requests in development
+if (process.env.NODE_ENV === 'development') {
+  app.use((req, res, next) => {
+    console.log(`📥 ${req.method} ${req.path}`, req.headers.authorization ? '[AUTH]' : '[NO AUTH]');
+    next();
+  });
+}
+
+// Routes
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/apartments', require('./routes/apartments'));
+app.use('/api/bookings', require('./routes/bookings'));
+app.use('/api/wallet', require('./routes/wallet'));
+app.use('/api/favorites', require('./routes/favorites'));
+app.use('/api/payments', require('./routes/payments'));
+app.use('/api/escrow', require('./routes/escrow'));
+app.use('/api/email', require('./routes/email'));
+
+// Health check
+app.get('/health', async (req, res) => {
+  let dbStatus = 'unknown';
+  try {
+    await sequelize.authenticate();
+    dbStatus = 'connected';
+  } catch (error) {
+    dbStatus = 'disconnected';
+  }
+  
+  res.json({ 
+    status: 'ok', 
+    message: 'Backend is running',
+    database: dbStatus,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
+
+// Start server
+const startServer = async () => {
+  let dbConnected = false;
+  
+  // Try to connect to database, but don't fail if it's not available
+  try {
+    await sequelize.authenticate();
+    console.log('✅ Database connection established');
+    dbConnected = true;
+
+    // Sync database (create tables if they don't exist)
+    // In production, use migrations instead
+    // On Railway, allow sync for initial setup (can be disabled later)
+    const shouldSync = process.env.NODE_ENV !== 'production' || process.env.RAILWAY_SYNC_DB === 'true';
+    if (shouldSync) {
+      await sequelize.sync({ alter: true });
+      console.log('✅ Database synced');
+    } else {
+      console.log('ℹ️  Database sync skipped (production mode)');
+    }
+  } catch (dbError) {
+    console.warn('⚠️  Database connection failed:', dbError.message);
+    console.warn('⚠️  Server will start but database-dependent endpoints will not work');
+    console.warn('⚠️  To fix: Install/start PostgreSQL or update DATABASE_URL in .env');
+    console.warn('');
+    dbConnected = false;
+  }
+
+  // Start server even if database is not connected
+  // This allows health checks and testing without database
+  // Railway provides PORT automatically, use 0.0.0.0 to bind to all interfaces
+  const host = process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : '0.0.0.0';
+  
+  app.listen(PORT, host, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
+    
+    if (process.env.RAILWAY_ENVIRONMENT) {
+      console.log(`🌐 Railway deployment detected`);
+      console.log(`   - Public URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'Check Railway dashboard'}`);
+    } else {
+      console.log(`🌐 Accessible at:`);
+      console.log(`   - http://localhost:${PORT} (local)`);
+      console.log(`   - http://10.0.2.2:${PORT} (Android emulator)`);
+      console.log(`   - http://[your-ip]:${PORT} (devices on same network)`);
+    }
+    
+    console.log('');
+    if (!dbConnected) {
+      console.log('⚠️  DATABASE STATUS: Not connected');
+      console.log('⚠️  Some endpoints may not work until PostgreSQL is available');
+      if (process.env.RAILWAY_ENVIRONMENT) {
+        console.log('⚠️  Make sure PostgreSQL service is added and connected in Railway');
+      }
+    } else {
+      console.log('✅ DATABASE STATUS: Connected');
+    }
+  });
+};
+
+startServer();
+
+module.exports = app;
+
