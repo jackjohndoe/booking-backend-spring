@@ -152,9 +152,9 @@ const startServer = async () => {
     const isRailway = process.env.RAILWAY_ENVIRONMENT || 
                      process.env.RAILWAY || 
                      process.env.RAILWAY_SERVICE_NAME ||
-                     process.env.PORT; // Railway always sets PORT
+                     (process.env.PORT && process.env.PORT !== '3000'); // Railway sets dynamic PORT
     
-    if (isRailway && process.env.PORT) {
+    if (isRailway) {
       console.log(`🌐 Railway deployment detected`);
       console.log(`   - Port: ${PORT}`);
       console.log(`   - Public URL: Check Railway dashboard for domain`);
@@ -169,12 +169,20 @@ const startServer = async () => {
     if (!dbConnected) {
       console.log('⚠️  DATABASE STATUS: Not connected');
       console.log('⚠️  Some endpoints may not work until PostgreSQL is available');
-      if (process.env.RAILWAY_ENVIRONMENT) {
+      if (isRailway) {
         console.log('⚠️  Make sure PostgreSQL service is added and connected in Railway');
       }
     } else {
       console.log('✅ DATABASE STATUS: Connected');
     }
+  }).on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Port ${PORT} is already in use`);
+      console.error('   Please stop the other process or use a different port');
+    } else {
+      console.error('❌ Server startup error:', err);
+    }
+    process.exit(1);
   });
 };
 
