@@ -135,8 +135,8 @@ const startServer = async () => {
 
   // Start server even if database is not connected
   // This allows health checks and testing without database
-  // Railway provides PORT automatically, use 0.0.0.0 to bind to all interfaces
-  const host = process.env.RAILWAY_ENVIRONMENT ? '0.0.0.0' : '0.0.0.0';
+  // Railway provides PORT automatically, bind to 0.0.0.0 to accept connections
+  const host = '0.0.0.0';
   
   app.listen(PORT, host, () => {
     console.log(`🚀 Server running on port ${PORT}`);
