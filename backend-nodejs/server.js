@@ -142,9 +142,16 @@ const startServer = async () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
     
-    if (process.env.RAILWAY_ENVIRONMENT) {
+    // Detect Railway environment
+    const isRailway = process.env.RAILWAY_ENVIRONMENT || 
+                     process.env.RAILWAY || 
+                     process.env.RAILWAY_SERVICE_NAME ||
+                     process.env.PORT; // Railway always sets PORT
+    
+    if (isRailway && process.env.PORT) {
       console.log(`🌐 Railway deployment detected`);
-      console.log(`   - Public URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'Check Railway dashboard'}`);
+      console.log(`   - Port: ${PORT}`);
+      console.log(`   - Public URL: Check Railway dashboard for domain`);
     } else {
       console.log(`🌐 Accessible at:`);
       console.log(`   - http://localhost:${PORT} (local)`);

@@ -17,11 +17,21 @@ if (databaseUrl && databaseUrl.trim() !== '') {
       // Parse DATABASE_URL format: postgresql://user:password@host:port/database
       // Railway and Supabase require SSL connections in production
       const isSupabase = databaseUrl.includes('supabase.co');
+      // Detect Railway - check multiple indicators
       const isRailway = databaseUrl.includes('railway.app') || 
                        databaseUrl.includes('railway.internal') ||
                        databaseUrl.includes('railway.tech') ||
-                       process.env.RAILWAY_ENVIRONMENT === 'true';
+                       databaseUrl.includes('railway') ||
+                       process.env.RAILWAY_ENVIRONMENT === 'true' ||
+                       process.env.RAILWAY === 'true' ||
+                       process.env.RAILWAY_SERVICE_NAME;
+      
+      // Railway PostgreSQL requires SSL in production
       const needsSSL = process.env.NODE_ENV === 'production' || isSupabase || isRailway;
+      
+      if (isRailway && __DEV__) {
+        console.log('🔍 Railway database detected - SSL will be enabled');
+      }
       
       sequelize = new Sequelize(databaseUrl, {
         dialect: 'postgres',
