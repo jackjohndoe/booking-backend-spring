@@ -9,18 +9,21 @@ require('./models');
 dotenv.config();
 
 // Handle uncaught exceptions and unhandled promise rejections
+// In production/Railway, log but don't exit to allow Railway to handle restarts
 process.on('uncaughtException', (error) => {
   console.error('❌ Uncaught Exception:', error);
-  // Don't exit in production, let Railway handle it
-  if (process.env.NODE_ENV !== 'production') {
+  console.error('Stack:', error.stack);
+  // In Railway/production, let the process manager handle restarts
+  if (process.env.NODE_ENV === 'development') {
     process.exit(1);
   }
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-  // Don't exit in production, let Railway handle it
-  if (process.env.NODE_ENV !== 'production') {
+  console.error('❌ Unhandled Rejection at:', promise);
+  console.error('Reason:', reason);
+  // In Railway/production, let the process manager handle restarts
+  if (process.env.NODE_ENV === 'development') {
     process.exit(1);
   }
 });
