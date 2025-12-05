@@ -185,7 +185,26 @@ const startServer = async () => {
   } catch (dbError) {
     console.warn('⚠️  Database connection failed:', dbError.message);
     console.warn('⚠️  Server will start but database-dependent endpoints will not work');
-    console.warn('⚠️  To fix: Install/start PostgreSQL or update DATABASE_URL in .env');
+    
+    if (dbError.message.includes('timeout')) {
+      console.warn('⚠️  Database connection timed out. Check if PostgreSQL service is running.');
+    } else if (dbError.message.includes('ECONNREFUSED')) {
+      console.warn('⚠️  Database connection refused. Check DATABASE_URL and PostgreSQL service.');
+    } else if (dbError.message.includes('authentication')) {
+      console.warn('⚠️  Database authentication failed. Check credentials in DATABASE_URL.');
+    }
+    
+    const isRailway = process.env.RAILWAY_ENVIRONMENT === 'true' || 
+                     process.env.RAILWAY === 'true' ||
+                     process.env.RAILWAY_SERVICE_NAME ||
+                     (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway'));
+    
+    if (isRailway) {
+      console.warn('⚠️  On Railway: Make sure PostgreSQL service is added and connected');
+      console.warn('⚠️  DATABASE_URL should be automatically provided by Railway');
+    } else {
+      console.warn('⚠️  To fix: Install/start PostgreSQL or update DATABASE_URL in .env');
+    }
     console.warn('');
     dbConnected = false;
   }
