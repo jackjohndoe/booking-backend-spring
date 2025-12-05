@@ -63,7 +63,9 @@ const apiRequest = async (endpoint, options = {}) => {
     try {
       response = await fetch(`${BASE_URL}${endpoint}`, {
         ...config,
-        signal: controller.signal
+        signal: controller.signal,
+        credentials: 'include', // Include cookies for CORS
+        mode: 'cors', // Explicitly set CORS mode
       });
       clearTimeout(timeoutId);
     } catch (fetchError) {
