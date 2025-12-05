@@ -145,8 +145,15 @@ const startServer = async () => {
     if (!sequelize) {
       console.warn('⚠️  Sequelize instance not initialized');
       console.warn('⚠️  Database connection will be skipped');
+      console.warn('⚠️  Set DATABASE_URL environment variable to connect to database');
     } else {
-      await sequelize.authenticate();
+      // Add timeout for database connection (10 seconds)
+      const connectionPromise = sequelize.authenticate();
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Database connection timeout')), 10000)
+      );
+      
+      await Promise.race([connectionPromise, timeoutPromise]);
       console.log('✅ Database connection established');
       dbConnected = true;
 

@@ -5,7 +5,7 @@
 nixPkgs = ["nodejs-18_x", "npm"]
 
 [phases.install]
-cmds = ["npm install --production=false"]
+cmds = ["npm ci --legacy-peer-deps || npm install --legacy-peer-deps"]
 
 [phases.build]
 cmds = ["echo 'Build complete'"]

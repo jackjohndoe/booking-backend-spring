@@ -60,23 +60,32 @@ if (databaseUrl && databaseUrl.trim() !== '') {
 // If DATABASE_URL was not set or invalid, use individual config
 if (!sequelize) {
   console.log('⚠️  Using individual database config (DATABASE_URL not set or invalid)');
-  sequelize = new Sequelize(
-    process.env.DB_NAME || 'booking_db',
-    process.env.DB_USER || 'user',
-    process.env.DB_PASSWORD || 'password',
-    {
-      host: process.env.DB_HOST || 'localhost',
-      port: process.env.DB_PORT || 5432,
-      dialect: 'postgres',
-      logging: process.env.NODE_ENV === 'development' ? console.log : false,
-      pool: {
-        max: 5,
-        min: 0,
-        acquire: 30000,
-        idle: 10000
+  try {
+    sequelize = new Sequelize(
+      process.env.DB_NAME || 'booking_db',
+      process.env.DB_USER || 'user',
+      process.env.DB_PASSWORD || 'password',
+      {
+        host: process.env.DB_HOST || 'localhost',
+        port: process.env.DB_PORT || 5432,
+        dialect: 'postgres',
+        logging: process.env.NODE_ENV === 'development' ? console.log : false,
+        pool: {
+          max: 5,
+          min: 0,
+          acquire: 30000,
+          idle: 10000
+        },
+        // Add connection timeout for Railway
+        dialectOptions: {
+          connectTimeout: 10000
+        }
       }
-    }
-  );
+    );
+  } catch (error) {
+    console.error('❌ Error creating Sequelize instance with individual config:', error.message);
+    sequelize = null;
+  }
 }
 
 module.exports = { sequelize };
