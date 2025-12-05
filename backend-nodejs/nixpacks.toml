@@ -2,14 +2,14 @@
 # Railway will use this for build configuration
 
 [phases.setup]
-nixPkgs = ["nodejs-18_x", "npm"]
+nixPkgs = ["nodejs-18_x"]
 
 [phases.install]
-cmds = ["npm ci --legacy-peer-deps || npm install --legacy-peer-deps"]
+cmds = ["npm install"]
 
 [phases.build]
 cmds = ["echo 'Build complete'"]
 
 [start]
-cmd = "npm start"
+cmd = "node server.js"
 
