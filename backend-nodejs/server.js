@@ -33,9 +33,17 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 // CORS configuration - explicitly allow localhost:8081 for Expo web
+// In Railway, allow all origins by default or use CORS_ORIGIN env var
+const isRailway = process.env.RAILWAY_ENVIRONMENT || 
+                 process.env.RAILWAY || 
+                 process.env.RAILWAY_SERVICE_NAME ||
+                 (process.env.PORT && process.env.PORT !== '3000');
+
 const allowedOrigins = process.env.CORS_ORIGIN 
   ? process.env.CORS_ORIGIN.split(',').map(origin => origin.trim())
-  : ['http://localhost:8081', 'http://localhost:19006', 'http://localhost:3000', '*'];
+  : isRailway 
+    ? ['*'] // Railway: allow all by default
+    : ['http://localhost:8081', 'http://localhost:19006', 'http://localhost:3000', '*'];
 
 app.use(cors({
   origin: function (origin, callback) {
