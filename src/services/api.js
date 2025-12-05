@@ -32,6 +32,19 @@ const apiRequest = async (endpoint, options = {}) => {
 
     if (token) {
       defaultHeaders['Authorization'] = `Bearer ${token}`;
+      if (__DEV__ && (endpoint.includes('/payments/') || endpoint.includes('/flutterwave/'))) {
+        console.log('🔑 Sending auth token for payment request:', {
+          tokenLength: token.length,
+          tokenPreview: token.substring(0, 20) + '...',
+          endpoint: endpoint
+        });
+      }
+    } else {
+      // Log missing token for payment endpoints
+      if (endpoint.includes('/payments/') || endpoint.includes('/flutterwave/')) {
+        console.warn('⚠️ No auth token found for payment request:', endpoint);
+        console.warn('   User may need to log in again');
+      }
     }
 
     const config = {
@@ -42,16 +55,68 @@ const apiRequest = async (endpoint, options = {}) => {
       },
     };
 
-    const response = await fetch(`${BASE_URL}${endpoint}`, config);
+    // Add timeout to fetch request
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.TIMEOUT);
+    
+    let response;
+    try {
+      response = await fetch(`${BASE_URL}${endpoint}`, {
+        ...config,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      
+      // Handle network errors
+      if (fetchError.name === 'AbortError') {
+        throw new Error('Request timeout. Please check your connection and try again.');
+      }
+      
+      // Check if backend is reachable
+      if (fetchError.message?.includes('Failed to fetch') || 
+          fetchError.message?.includes('NetworkError') ||
+          fetchError.message?.includes('Network request failed')) {
+        
+        // Try to check if backend is running
+        try {
+          const healthCheck = await fetch(`${BASE_URL}/health`, {
+            method: 'GET',
+            signal: AbortSignal.timeout(3000)
+          });
+          if (healthCheck.ok) {
+            throw new Error('Backend is running but request failed. Please try again.');
+          }
+        } catch (healthError) {
+          // Backend is not reachable
+          const networkError = new Error('Backend server is not reachable. Please ensure the backend is running on http://localhost:3000');
+          networkError.status = 0;
+          networkError.isNetworkError = true;
+          throw networkError;
+        }
+      }
+      
+      // Re-throw other fetch errors
+      const networkError = new Error(`Network error: ${fetchError.message || 'Unable to connect to server'}`);
+      networkError.status = 0;
+      networkError.isNetworkError = true;
+      throw networkError;
+    }
     
     // Handle non-JSON responses
     const contentType = response.headers.get('content-type');
     let data;
     
-    if (contentType && contentType.includes('application/json')) {
-      data = await response.json();
-    } else {
-      data = await response.text();
+    try {
+      if (contentType && contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        data = await response.text();
+      }
+    } catch (parseError) {
+      // If response parsing fails, use status text
+      data = { error: `Server error: ${response.status} ${response.statusText}` };
     }
 
     if (!response.ok) {
@@ -164,6 +229,34 @@ const apiRequest = async (endpoint, options = {}) => {
         return null;
       }
       
+      // For payment endpoints, throw errors so they can be properly handled
+      const isPaymentEndpoint = endpoint.includes('/payments/') || endpoint.includes('/flutterwave/');
+      
+      if (isPaymentEndpoint) {
+        // Extract error message from response
+        let errorMessage = `Payment API error (${response.status})`;
+        if (typeof data === 'string') {
+          errorMessage = data;
+        } else if (data && typeof data === 'object') {
+          errorMessage = data.error || data.message || data.errorMessage || errorMessage;
+        }
+        
+        // Special handling for 401 errors
+        if (response.status === 401) {
+          if (data?.error?.includes('token') || data?.error?.includes('Token') || 
+              data?.error?.includes('expired') || data?.error?.includes('Invalid')) {
+            errorMessage = 'Authentication required. Please log in and try again.';
+          } else if (data?.error?.includes('No token')) {
+            errorMessage = 'No authentication token found. Please log in.';
+          }
+        }
+        
+        const error = new Error(errorMessage);
+        error.status = response.status;
+        error.data = data;
+        throw error;
+      }
+      
       // For other endpoints, return null for graceful fallback (preserves frontend)
       if (response.status === 403 || response.status === 401) {
         // Only log authentication errors in development or for specific endpoints
@@ -203,7 +296,16 @@ const apiRequest = async (endpoint, options = {}) => {
       throw networkError;
     }
     
-    // Network errors, timeouts, etc. - return null to preserve frontend for non-auth endpoints
+    // Network errors, timeouts, etc.
+    // For payment endpoints, throw the error so it can be handled properly
+    if (isPaymentEndpoint) {
+      const networkError = new Error(`Network error: ${error.message || 'Unable to connect to backend server'}`);
+      networkError.status = 0; // Indicate network error
+      networkError.isNetworkError = true;
+      throw networkError;
+    }
+    
+    // For other endpoints, return null to preserve frontend
     console.log('API network error, using local storage fallback:', error.message);
     return null;
   }
