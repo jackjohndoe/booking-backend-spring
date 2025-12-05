@@ -204,8 +204,12 @@ const startServer = async () => {
       console.error('   Please stop the other process or use a different port');
     } else {
       console.error('❌ Server startup error:', err);
+      console.error('Error details:', err.message);
     }
-    process.exit(1);
+    // In Railway, let it restart automatically
+    if (process.env.NODE_ENV === 'development') {
+      process.exit(1);
+    }
   });
 };
 
