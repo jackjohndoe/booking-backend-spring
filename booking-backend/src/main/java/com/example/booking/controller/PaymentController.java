@@ -1,6 +1,7 @@
 package com.example.booking.controller;
 
 import com.example.booking.dto.payment.PaymentRequest;
+import com.example.booking.payment.FlutterwaveService;
 import com.example.booking.payment.PaymentProvider;
 import com.example.booking.payment.dto.PaymentIntentRequest;
 import com.example.booking.payment.dto.PaymentIntentResponse;
@@ -15,6 +16,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -29,10 +31,12 @@ public class PaymentController {
 
     private final PaymentService paymentService;
     private final PaymentProvider paymentProvider;
+    private final FlutterwaveService flutterwaveService;
 
-    public PaymentController(PaymentService paymentService, PaymentProvider paymentProvider) {
+    public PaymentController(PaymentService paymentService, PaymentProvider paymentProvider, FlutterwaveService flutterwaveService) {
         this.paymentService = paymentService;
         this.paymentProvider = paymentProvider;
+        this.flutterwaveService = flutterwaveService;
     }
 
     @Operation(summary = "Process booking payment", 
@@ -200,6 +204,124 @@ public class PaymentController {
             return ResponseEntity.status(500).body(Map.of(
                     "error", e.getMessage() != null ? e.getMessage() : "Payment verification failed",
                     "message", e.getMessage() != null ? e.getMessage() : "An error occurred while verifying payment"
+            ));
+        }
+    }
+
+    @Operation(summary = "Create Flutterwave virtual account", 
+            description = "Creates a unique virtual account number for bank transfer payments via Flutterwave.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Virtual account created successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid request parameters"),
+            @ApiResponse(responseCode = "500", description = "Flutterwave not configured or virtual account creation failed")
+    })
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/flutterwave/create-virtual-account")
+    public ResponseEntity<?> createFlutterwaveVirtualAccount(
+            @RequestBody Map<String, Object> request,
+            @AuthenticationPrincipal BookingUserDetails userDetails) {
+        try {
+            // Extract request parameters
+            Object amountObj = request.get("amount");
+            Object emailObj = request.get("email");
+            Object nameObj = request.get("name");
+            Object txRefObj = request.get("tx_ref");
+
+            // Validate required fields
+            if (amountObj == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Amount is required"));
+            }
+            if (emailObj == null || emailObj.toString().trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Email is required"));
+            }
+            if (nameObj == null || nameObj.toString().trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Name is required"));
+            }
+            if (txRefObj == null || txRefObj.toString().trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Transaction reference (tx_ref) is required"));
+            }
+
+            // Convert amount to BigDecimal
+            BigDecimal amount;
+            if (amountObj instanceof Number) {
+                amount = BigDecimal.valueOf(((Number) amountObj).doubleValue());
+            } else {
+                try {
+                    amount = new BigDecimal(amountObj.toString());
+                } catch (NumberFormatException e) {
+                    return ResponseEntity.badRequest().body(Map.of("error", "Invalid amount format"));
+                }
+            }
+
+            if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Amount must be greater than zero"));
+            }
+
+            // Create virtual account via FlutterwaveService
+            FlutterwaveService.VirtualAccountResponse virtualAccount = flutterwaveService.createVirtualAccount(
+                    emailObj.toString(),
+                    amount,
+                    nameObj.toString(),
+                    txRefObj.toString()
+            );
+
+            // Return response in format expected by frontend
+            return ResponseEntity.ok(Map.of(
+                    "account_number", virtualAccount.getAccountNumber() != null ? virtualAccount.getAccountNumber() : "",
+                    "account_name", virtualAccount.getAccountName() != null ? virtualAccount.getAccountName() : "",
+                    "bank_name", virtualAccount.getBankName() != null ? virtualAccount.getBankName() : "",
+                    "tx_ref", virtualAccount.getTxRef() != null ? virtualAccount.getTxRef() : txRefObj.toString()
+            ));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", "Flutterwave not configured",
+                    "message", e.getMessage() != null ? e.getMessage() : "Please configure Flutterwave credentials"
+            ));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", e.getMessage() != null ? e.getMessage() : "Virtual account creation failed",
+                    "message", e.getMessage() != null ? e.getMessage() : "An error occurred while creating virtual account"
+            ));
+        }
+    }
+
+    @Operation(summary = "Flutterwave webhook", 
+            description = "Receives webhook events from Flutterwave for payment verification.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Webhook processed successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid webhook payload or verification failed")
+    })
+    @PostMapping("/flutterwave/webhook")
+    public ResponseEntity<?> handleFlutterwaveWebhook(
+            @RequestBody Map<String, Object> webhookPayload,
+            @RequestHeader HttpHeaders headers) {
+        try {
+            // Process webhook via FlutterwaveService with hash verification
+            FlutterwaveService.WebhookResult result = flutterwaveService.handleWebhook(webhookPayload, headers);
+            
+            if (result.isSuccess()) {
+                // TODO: Update booking status and fund host wallet based on tx_ref
+                // For now, just return success with transaction references
+                Map<String, Object> response = new java.util.HashMap<>();
+                response.put("status", "success");
+                response.put("message", result.getMessage() != null ? result.getMessage() : "Webhook processed successfully");
+                if (result.getTxRef() != null) {
+                    response.put("tx_ref", result.getTxRef());
+                }
+                if (result.getFlwRef() != null) {
+                    response.put("flw_ref", result.getFlwRef());
+                }
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "status", "failed",
+                        "message", result.getMessage() != null ? result.getMessage() : "Webhook processing failed"
+                ));
+            }
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of(
+                    "error", e.getMessage() != null ? e.getMessage() : "Webhook processing failed",
+                    "message", e.getMessage() != null ? e.getMessage() : "An error occurred while processing webhook"
             ));
         }
     }
