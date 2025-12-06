@@ -131,7 +131,8 @@ public class FlutterwaveService {
             } else {
                 log.error("❌ Failed to obtain OAuth token: Invalid response - tokenResponse is null or has no access_token");
                 if (tokenResponse != null) {
-                    log.error("Response message: {}", tokenResponse.getMessage());
+                    log.error("OAuth token response details: tokenType={}, expiresIn={}", 
+                            tokenResponse.getTokenType(), tokenResponse.getExpiresIn());
                 }
                 throw new RuntimeException("Failed to obtain Flutterwave OAuth token: Invalid response - no access_token in response");
             }
