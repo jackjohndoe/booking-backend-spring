@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Modal,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useRoute, useNavigation } from '@react-navigation/native';
@@ -19,6 +20,7 @@ import { sendBookingEmails } from '../utils/emailService';
 import { getUserProfile } from '../utils/userStorage';
 import { hybridWalletService } from '../services/hybridService';
 import { notifyHostNewBooking, notifyHostWalletFunded } from '../utils/notifications';
+import { createVirtualAccount } from '../services/flutterwaveService';
 
 export default function TransferPaymentScreen() {
   const route = useRoute();
@@ -34,20 +36,118 @@ export default function TransferPaymentScreen() {
   } = route.params || {};
   
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [virtualAccount, setVirtualAccount] = useState(null);
+  const [loadingAccount, setLoadingAccount] = useState(true);
+  const [virtualAccountError, setVirtualAccountError] = useState(null);
+  const [txRef, setTxRef] = useState(null);
 
   const formatPrice = (price) => {
     return `₦${price.toLocaleString()}`;
   };
 
-  // Company bank account details
-  const bankDetails = {
-    bankName: 'Access Bank',
-    accountName: 'Nigerian Apartments Leasing Ltd',
-    accountNumber: '0123456789',
-  };
+  // Generate unique transaction reference and fetch virtual account
+  useEffect(() => {
+    const fetchVirtualAccount = async () => {
+      if (!user || !user.email || !totalAmount || !apartment) {
+        setLoadingAccount(false);
+        return;
+      }
 
-  const handleCopy = (text) => {
-    Alert.alert('Copied!', 'Account details copied to clipboard');
+      // Check if user has authentication token
+      try {
+        const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+        const userData = await AsyncStorage.getItem('user');
+        if (!userData) {
+          console.warn('User not authenticated - cannot create virtual account');
+          setVirtualAccountError('Please log in to create a virtual account');
+          setLoadingAccount(false);
+          return;
+        }
+        const parsedUser = JSON.parse(userData);
+        const token = parsedUser?.token || parsedUser?.accessToken;
+        if (!token) {
+          console.error('❌ User data exists but no token found in AsyncStorage');
+          console.error('User data keys:', Object.keys(parsedUser));
+          setVirtualAccountError('Authentication token missing. Please sign out and sign in again.');
+          setLoadingAccount(false);
+          return;
+        }
+        console.log('✅ Token found for virtual account creation:', token.substring(0, 20) + '...');
+      } catch (authCheckError) {
+        console.error('Error checking authentication:', authCheckError);
+        setVirtualAccountError('Authentication check failed. Please try logging in again.');
+        setLoadingAccount(false);
+        return;
+      }
+
+      try {
+        setLoadingAccount(true);
+        
+        // Generate unique transaction reference
+        const generatedTxRef = `${user.email}_${Date.now()}_${apartment.id || apartment._id}`;
+        setTxRef(generatedTxRef);
+
+        // Get user profile for name
+        let userName = user?.name || 'Guest';
+        try {
+          const userProfile = await getUserProfile(user.email);
+          if (userProfile?.name) {
+            userName = userProfile.name;
+          }
+        } catch (profileError) {
+          console.log('Could not load user profile for virtual account:', profileError);
+        }
+
+        // Create virtual account via Flutterwave
+        const accountDetails = await createVirtualAccount(
+          user.email,
+          totalAmount,
+          userName,
+          generatedTxRef
+        );
+
+        setVirtualAccount(accountDetails);
+      } catch (error) {
+        console.error('Error creating virtual account:', error);
+        
+        // Provide specific error messages based on error type
+        let errorMessage = error.message || 'Failed to create virtual account. Please try again or use a different payment method.';
+        
+        if (error.message && error.message.includes('Unauthorized')) {
+          errorMessage = 'Please log in to create a virtual account. You may need to sign out and sign in again.';
+        } else if (error.message && error.message.includes('Network error')) {
+          errorMessage = 'Network error. Please check your connection and try again.';
+        }
+        
+        // Show error but don't block the screen - user can still see the amount
+        Alert.alert(
+          'Virtual Account Error',
+          errorMessage,
+          [{ text: 'OK' }]
+        );
+      } finally {
+        setLoadingAccount(false);
+      }
+    };
+
+    fetchVirtualAccount();
+  }, [user, totalAmount, apartment]);
+
+  const handleCopy = async (text) => {
+    try {
+      // Use Clipboard API if available (Web)
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(text);
+        Alert.alert('Copied!', 'Account details copied to clipboard');
+      } else {
+        // Fallback: Just show alert (clipboard copy may not be available on all platforms)
+        Alert.alert('Copied!', `Account details: ${text}`);
+      }
+    } catch (error) {
+      console.error('Error copying to clipboard:', error);
+      // Fallback: Show the text in alert
+      Alert.alert('Account Details', text);
+    }
   };
 
   const handleConfirmTransfer = async () => {
@@ -120,6 +220,7 @@ export default function TransferPaymentScreen() {
         bookingDate: new Date().toISOString(),
         hostEmail: apartment?.hostEmail || apartment?.createdBy || null, // Store host email for rating verification
         hostName: apartment?.hostName || null,
+        txRef: txRef || null, // Store transaction reference for webhook matching
       };
 
       // Send booking confirmation emails IMMEDIATELY after payment confirmation
@@ -337,35 +438,69 @@ export default function TransferPaymentScreen() {
         <View style={styles.bankCard}>
           <Text style={styles.cardTitle}>Bank Account Details</Text>
           
-          <View style={styles.accountDetail}>
-            <Text style={styles.detailLabel}>Bank</Text>
-            <Text style={styles.detailValue}>{bankDetails.bankName}</Text>
-          </View>
-
-          <View style={styles.accountDetail}>
-            <Text style={styles.detailLabel}>Account Name</Text>
-            <Text style={styles.detailValue}>{bankDetails.accountName}</Text>
-          </View>
-
-          <View style={styles.accountDetail}>
-            <Text style={styles.detailLabel}>Account Number</Text>
-            <View style={styles.accountNumberRow}>
-              <Text style={styles.accountNumber}>{bankDetails.accountNumber}</Text>
-              <TouchableOpacity
-                style={styles.copyButton}
-                onPress={() => handleCopy(bankDetails.accountNumber)}
+          {loadingAccount ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#FFD700" />
+              <Text style={styles.loadingText}>Generating virtual account...</Text>
+            </View>
+          ) : virtualAccountError ? (
+            <View style={styles.errorContainer}>
+              <MaterialIcons name="error-outline" size={24} color="#FF0000" />
+              <Text style={styles.errorText}>{virtualAccountError}</Text>
+              <TouchableOpacity 
+                onPress={() => navigation.navigate('SignIn')} 
+                style={styles.errorButton}
               >
-                <MaterialIcons name="content-copy" size={18} color="#FFD700" />
+                <Text style={styles.errorButtonText}>Go to Login</Text>
               </TouchableOpacity>
             </View>
-          </View>
+          ) : virtualAccount ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#FFD700" />
+              <Text style={styles.loadingText}>Generating virtual account...</Text>
+            </View>
+          ) : virtualAccount ? (
+            <>
+              <View style={styles.accountDetail}>
+                <Text style={styles.detailLabel}>Bank</Text>
+                <Text style={styles.detailValue}>{virtualAccount.bankName}</Text>
+              </View>
+
+              <View style={styles.accountDetail}>
+                <Text style={styles.detailLabel}>Account Name</Text>
+                <Text style={styles.detailValue}>{virtualAccount.accountName}</Text>
+              </View>
+
+              <View style={styles.accountDetail}>
+                <Text style={styles.detailLabel}>Account Number</Text>
+                <View style={styles.accountNumberRow}>
+                  <Text style={styles.accountNumber}>{virtualAccount.accountNumber}</Text>
+                  <TouchableOpacity
+                    style={styles.copyButton}
+                    onPress={() => handleCopy(virtualAccount.accountNumber)}
+                  >
+                    <MaterialIcons name="content-copy" size={18} color="#FFD700" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </>
+          ) : (
+            <View style={styles.errorContainer}>
+              <MaterialIcons name="error-outline" size={24} color="#FF6B6B" />
+              <Text style={styles.errorText}>
+                Failed to load account details. Please try again or use a different payment method.
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Simple Note */}
         <View style={styles.noteContainer}>
           <MaterialIcons name="info-outline" size={16} color="#666" />
           <Text style={styles.noteText}>
-            Transfer the exact amount above. Payment verification takes 1-2 business days.
+            {virtualAccount 
+              ? "Transfer the exact amount above to the account details shown. Payment will be verified automatically once the transfer is complete."
+              : "Transfer the exact amount above. Payment verification takes 1-2 business days."}
           </Text>
         </View>
       </ScrollView>
@@ -373,12 +508,13 @@ export default function TransferPaymentScreen() {
       {/* Confirm Transfer Button */}
       <View style={styles.buttonContainer}>
         <TouchableOpacity
-          style={styles.confirmButton}
+          style={[styles.confirmButton, (!virtualAccount || loadingAccount) && styles.confirmButtonDisabled]}
           onPress={handleConfirmTransfer}
           activeOpacity={0.8}
+          disabled={!virtualAccount || loadingAccount}
         >
           <Text style={styles.confirmButtonText}>
-            I've Completed the Transfer
+            {loadingAccount ? 'Loading Account Details...' : "I've Completed the Transfer"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -544,6 +680,32 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     color: '#333',
+  },
+  confirmButtonDisabled: {
+    backgroundColor: '#CCC',
+    opacity: 0.6,
+  },
+  loadingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: '#666',
+  },
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    padding: 16,
+    gap: 12,
+  },
+  errorText: {
+    flex: 1,
+    fontSize: 14,
+    color: '#FF6B6B',
+    lineHeight: 20,
   },
   modalOverlay: {
     flex: 1,

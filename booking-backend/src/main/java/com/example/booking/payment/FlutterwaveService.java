@@ -205,22 +205,48 @@ public class FlutterwaveService {
                         .txRef(txRef)
                         .build();
             } else {
-                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error";
-                log.error("Flutterwave virtual account creation failed: {}", errorMsg);
-                throw new RuntimeException("Flutterwave virtual account creation failed: " + errorMsg);
+                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error from Flutterwave";
+                String status = flutterwaveResponse != null ? flutterwaveResponse.getStatus() : "null";
+                log.error("Flutterwave virtual account creation failed. Status: {}, Message: {}", status, errorMsg);
+                
+                // If no message, provide default based on status
+                if (errorMsg == null || errorMsg.trim().isEmpty()) {
+                    errorMsg = "Flutterwave API returned status: " + status + ". Check Flutterwave dashboard for details.";
+                }
+                throw new RuntimeException(errorMsg);
             }
         } catch (HttpClientErrorException | HttpServerErrorException e) {
+            String responseBody = e.getResponseBodyAsString();
             log.error("Flutterwave API error creating virtual account: HTTP {} - {}", 
-                    e.getStatusCode().value(), e.getResponseBodyAsString());
-            throw new RuntimeException("Flutterwave virtual account creation failed: " + 
-                    e.getResponseBodyAsString(), e);
+                    e.getStatusCode().value(), responseBody);
+            
+            // Try to extract error message from Flutterwave response
+            String errorMessage = "Flutterwave API returned error";
+            if (responseBody != null && !responseBody.trim().isEmpty()) {
+                try {
+                    // Try to parse as JSON to extract message
+                    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                    @SuppressWarnings("unchecked")
+                    java.util.Map<String, Object> errorData = mapper.readValue(responseBody, java.util.Map.class);
+                    if (errorData != null) {
+                        String msg = (String) errorData.get("message");
+                        if (msg != null && !msg.trim().isEmpty()) {
+                            errorMessage = msg;
+                        }
+                    }
+                } catch (Exception parseException) {
+                    // If parsing fails, use the raw response
+                    errorMessage = responseBody.length() > 200 ? responseBody.substring(0, 200) : responseBody;
+                }
+            }
+            
+            throw new RuntimeException(errorMessage, e);
         } catch (RestClientException e) {
             log.error("Network error creating virtual account", e);
-            throw new RuntimeException("Flutterwave virtual account creation failed: Network error - " + 
-                    e.getMessage(), e);
+            throw new RuntimeException("Network error connecting to Flutterwave: " + e.getMessage(), e);
         } catch (Exception e) {
             log.error("Unexpected error creating virtual account", e);
-            throw new RuntimeException("Flutterwave virtual account creation failed: " + e.getMessage(), e);
+            throw new RuntimeException("Unexpected error: " + e.getMessage(), e);
         }
     }
 

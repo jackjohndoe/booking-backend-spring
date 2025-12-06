@@ -10,7 +10,13 @@ const getAuthToken = async () => {
     const userData = await AsyncStorage.getItem('user');
     if (userData) {
       const user = JSON.parse(userData);
-      return user?.token || user?.accessToken || null;
+      const token = user?.token || user?.accessToken || null;
+      if (!token) {
+        console.warn('User data found but no token available');
+      }
+      return token;
+    } else {
+      console.warn('No user data found in AsyncStorage - user may not be logged in');
     }
     return null;
   } catch (error) {
@@ -22,6 +28,7 @@ const getAuthToken = async () => {
 // Base API request function
 const apiRequest = async (endpoint, options = {}) => {
   const isAuthEndpoint = endpoint.includes('/auth/login') || endpoint.includes('/auth/register');
+  const isPaymentEndpoint = endpoint.includes('/payments/');
   
   try {
     const token = await getAuthToken();
@@ -32,19 +39,13 @@ const apiRequest = async (endpoint, options = {}) => {
 
     if (token) {
       defaultHeaders['Authorization'] = `Bearer ${token}`;
-      if (__DEV__ && (endpoint.includes('/payments/') || endpoint.includes('/flutterwave/'))) {
-        console.log('🔑 Sending auth token for payment request:', {
-          tokenLength: token.length,
-          tokenPreview: token.substring(0, 20) + '...',
-          endpoint: endpoint
-        });
+      if (isPaymentEndpoint && __DEV__) {
+        console.log('✅ Payment request with token:', token.substring(0, 20) + '...');
       }
-    } else {
-      // Log missing token for payment endpoints
-      if (endpoint.includes('/payments/') || endpoint.includes('/flutterwave/')) {
-        console.warn('⚠️ No auth token found for payment request:', endpoint);
-        console.warn('   User may need to log in again');
-      }
+    } else if (isPaymentEndpoint) {
+      // For payment endpoints, log warning if no token
+      console.error('❌ Payment endpoint requires authentication but no token found');
+      console.error('Make sure you are logged in. Try signing out and signing in again.');
     }
 
     const config = {
@@ -55,56 +56,7 @@ const apiRequest = async (endpoint, options = {}) => {
       },
     };
 
-    // Add timeout to fetch request
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.TIMEOUT);
-    
-    let response;
-    try {
-      response = await fetch(`${BASE_URL}${endpoint}`, {
-        ...config,
-        signal: controller.signal,
-        credentials: 'include', // Include cookies for CORS
-        mode: 'cors', // Explicitly set CORS mode
-      });
-      clearTimeout(timeoutId);
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
-      
-      // Handle network errors
-      if (fetchError.name === 'AbortError') {
-        throw new Error('Request timeout. Please check your connection and try again.');
-      }
-      
-      // Check if backend is reachable
-      if (fetchError.message?.includes('Failed to fetch') || 
-          fetchError.message?.includes('NetworkError') ||
-          fetchError.message?.includes('Network request failed')) {
-        
-        // Try to check if backend is running
-        try {
-          const healthCheck = await fetch(`${BASE_URL}/health`, {
-            method: 'GET',
-            signal: AbortSignal.timeout(3000)
-          });
-          if (healthCheck.ok) {
-            throw new Error('Backend is running but request failed. Please try again.');
-          }
-        } catch (healthError) {
-          // Backend is not reachable
-          const networkError = new Error('Backend server is not reachable. Please ensure the backend is running on http://localhost:3000');
-          networkError.status = 0;
-          networkError.isNetworkError = true;
-          throw networkError;
-        }
-      }
-      
-      // Re-throw other fetch errors
-      const networkError = new Error(`Network error: ${fetchError.message || 'Unable to connect to server'}`);
-      networkError.status = 0;
-      networkError.isNetworkError = true;
-      throw networkError;
-    }
+    const response = await fetch(`${BASE_URL}${endpoint}`, config);
     
     // Handle non-JSON responses
     const contentType = response.headers.get('content-type');
@@ -114,11 +66,23 @@ const apiRequest = async (endpoint, options = {}) => {
       if (contentType && contentType.includes('application/json')) {
         data = await response.json();
       } else {
-        data = await response.text();
+        const textData = await response.text();
+        // Try to parse as JSON if it looks like JSON
+        try {
+          data = JSON.parse(textData);
+        } catch {
+          data = textData;
+        }
       }
     } catch (parseError) {
-      // If response parsing fails, use status text
-      data = { error: `Server error: ${response.status} ${response.statusText}` };
+      console.error('Error parsing response:', parseError);
+      // For error responses, try to get text
+      try {
+        const textData = await response.text();
+        data = { error: textData || `Server error (${response.status})`, message: textData || `Server error (${response.status})` };
+      } catch {
+        data = { error: `Server error (${response.status})`, message: `Server error (${response.status})` };
+      }
     }
 
     if (!response.ok) {
@@ -231,31 +195,40 @@ const apiRequest = async (endpoint, options = {}) => {
         return null;
       }
       
-      // For payment endpoints, throw errors so they can be properly handled
-      const isPaymentEndpoint = endpoint.includes('/payments/') || endpoint.includes('/flutterwave/');
-      
+      // For payment endpoints, throw errors so they can be handled properly
       if (isPaymentEndpoint) {
-        // Extract error message from response
-        let errorMessage = `Payment API error (${response.status})`;
+        // Try to extract error message from various response formats
+        let errorMessage = '';
+        
         if (typeof data === 'string') {
           errorMessage = data;
-        } else if (data && typeof data === 'object') {
-          errorMessage = data.error || data.message || data.errorMessage || errorMessage;
+        } else if (typeof data === 'object' && data) {
+          errorMessage = data.error || data.message || data.errorMessage || JSON.stringify(data);
         }
         
-        // Special handling for 401 errors
-        if (response.status === 401) {
-          if (data?.error?.includes('token') || data?.error?.includes('Token') || 
-              data?.error?.includes('expired') || data?.error?.includes('Invalid')) {
-            errorMessage = 'Authentication required. Please log in and try again.';
-          } else if (data?.error?.includes('No token')) {
-            errorMessage = 'No authentication token found. Please log in.';
+        // If still no error message, provide default based on status
+        if (!errorMessage || errorMessage.trim() === '') {
+          if (response.status === 401 || response.status === 403) {
+            errorMessage = 'Authentication failed. Please sign out and sign in again to refresh your session.';
+          } else if (response.status === 500) {
+            errorMessage = 'Server error. The backend may not have Flutterwave credentials configured. Please check backend logs.';
+          } else {
+            errorMessage = `Payment API error (${response.status})`;
           }
         }
         
+        // Log full error details for debugging
+        console.error('❌ Payment endpoint error:', {
+          status: response.status,
+          endpoint,
+          errorMessage,
+          responseData: data,
+          hasToken: !!token
+        });
+        
         const error = new Error(errorMessage);
         error.status = response.status;
-        error.data = data;
+        error.response = { data };
         throw error;
       }
       
@@ -284,30 +257,20 @@ const apiRequest = async (endpoint, options = {}) => {
 
     return data;
   } catch (error) {
-    // If error was already thrown (from auth endpoints with status), re-throw it
-    // Auth errors will have error.status set from the throw above
-    if (error.status && (error.status === 401 || error.status === 403 || error.status === 400 || error.status === 404 || error.status === 409)) {
-      // This is an authentication error that was thrown - re-throw it
+    // If error was already thrown (from auth/payment endpoints with status), re-throw it
+    if (error.status && (error.status === 401 || error.status === 403 || error.status === 400 || error.status === 404 || error.status === 409 || error.status === 500)) {
+      // This is an error that was thrown - re-throw it
       throw error;
     }
     
-    // For auth endpoints, throw network errors so users get feedback
-    if (isAuthEndpoint) {
+    // For auth and payment endpoints, throw network errors so users get feedback
+    if (isAuthEndpoint || isPaymentEndpoint) {
       const networkError = new Error('Network error. Please check your connection and try again.');
       networkError.status = 0; // Indicate network error
       throw networkError;
     }
     
-    // Network errors, timeouts, etc.
-    // For payment endpoints, throw the error so it can be handled properly
-    if (isPaymentEndpoint) {
-      const networkError = new Error(`Network error: ${error.message || 'Unable to connect to backend server'}`);
-      networkError.status = 0; // Indicate network error
-      networkError.isNetworkError = true;
-      throw networkError;
-    }
-    
-    // For other endpoints, return null to preserve frontend
+    // Network errors, timeouts, etc. - return null to preserve frontend for non-auth endpoints
     console.log('API network error, using local storage fallback:', error.message);
     return null;
   }

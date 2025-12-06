@@ -278,9 +278,30 @@ public class PaymentController {
                     "message", e.getMessage() != null ? e.getMessage() : "Please configure Flutterwave credentials"
             ));
         } catch (Exception e) {
+            // Extract root cause message
+            String errorMessage = e.getMessage();
+            Throwable cause = e.getCause();
+            while (cause != null && cause.getMessage() != null) {
+                errorMessage = cause.getMessage();
+                cause = cause.getCause();
+            }
+            
+            // Clean up error message (remove duplicate prefixes)
+            if (errorMessage != null && errorMessage.startsWith("Flutterwave virtual account creation failed: ")) {
+                errorMessage = errorMessage.substring("Flutterwave virtual account creation failed: ".length());
+            }
+            
+            // Log full error for debugging
+            System.err.println("ERROR in createVirtualAccount: " + e.getClass().getName());
+            System.err.println("ERROR Message: " + e.getMessage());
+            if (e.getCause() != null) {
+                System.err.println("ERROR Cause: " + e.getCause().getMessage());
+            }
+            e.printStackTrace();
+            
             return ResponseEntity.status(500).body(Map.of(
-                    "error", e.getMessage() != null ? e.getMessage() : "Virtual account creation failed",
-                    "message", e.getMessage() != null ? e.getMessage() : "An error occurred while creating virtual account"
+                    "error", errorMessage != null && !errorMessage.trim().isEmpty() ? errorMessage : "Virtual account creation failed",
+                    "message", errorMessage != null && !errorMessage.trim().isEmpty() ? errorMessage : "An error occurred while creating virtual account. Check backend logs for details."
             ));
         }
     }
