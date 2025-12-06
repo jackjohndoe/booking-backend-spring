@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    
+    <!-- Console appender -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %5p ${PID:- } --- [%15.15t] %-40.40logger{39} : %m%n%wEx</pattern>
+        </encoder>
+    </appender>
+    
+    <!-- Root logger - WARN level to prevent log spam -->
+    <root level="WARN">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+    
+    <!-- Application logs - INFO level to see important messages -->
+    <logger name="com.example.booking" level="INFO"/>
+    <logger name="com.example.booking.payment.FlutterwaveService" level="INFO"/>
+    
+    <!-- Hibernate - WARN level to disable DEBUG spam -->
+    <logger name="org.hibernate" level="WARN"/>
+    <logger name="org.hibernate.orm" level="WARN"/>
+    <logger name="org.hibernate.orm.sql" level="WARN"/>
+    <logger name="org.hibernate.orm.sql.ast" level="OFF"/>
+    <logger name="org.hibernate.orm.sql.exec" level="OFF"/>
+    <logger name="org.hibernate.orm.results" level="OFF"/>
+    <logger name="org.hibernate.orm.results.loading" level="OFF"/>
+    <logger name="org.hibernate.SQL" level="WARN"/>
+    <logger name="org.hibernate.type" level="WARN"/>
+    <logger name="org.hibernate.type.descriptor.sql" level="OFF"/>
+    
+    <!-- Spring Framework - WARN level -->
+    <logger name="org.springframework" level="WARN"/>
+    <logger name="org.springframework.web" level="WARN"/>
+    <logger name="org.springframework.security" level="WARN"/>
+    <logger name="org.springframework.boot" level="WARN"/>
+    <logger name="org.springframework.orm" level="WARN"/>
+    <logger name="org.springframework.orm.jpa" level="WARN"/>
+    <logger name="org.springframework.transaction" level="WARN"/>
+    <logger name="org.springframework.jdbc" level="WARN"/>
+    <logger name="org.springframework.jdbc.datasource" level="WARN"/>
+    
+    <!-- PostgreSQL JDBC - WARN level -->
+    <logger name="org.postgresql" level="WARN"/>
+    <logger name="org.postgresql.jdbc" level="WARN"/>
+    
+    <!-- HikariCP - WARN level to disable housekeeper logs -->
+    <logger name="com.zaxxer.hikari" level="WARN"/>
+    <logger name="com.zaxxer.hikari.pool" level="WARN"/>
+    <logger name="com.zaxxer.hikari.pool.HikariPool" level="WARN"/>
+    
+    <!-- Tomcat/Jakarta - WARN level -->
+    <logger name="org.apache.catalina" level="WARN"/>
+    <logger name="org.apache.coyote" level="WARN"/>
+    <logger name="org.apache.tomcat" level="WARN"/>
+    <logger name="jakarta" level="WARN"/>
+</configuration>
+
