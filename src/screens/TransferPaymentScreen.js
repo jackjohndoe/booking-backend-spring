@@ -68,11 +68,23 @@ export default function TransferPaymentScreen() {
         if (!token) {
           console.error('❌ User data exists but no token found in AsyncStorage');
           console.error('User data keys:', Object.keys(parsedUser));
+          console.error('Full user object (token redacted):', { ...parsedUser, token: 'REDACTED' });
           setVirtualAccountError('Authentication token missing. Please sign out and sign in again.');
           setLoadingAccount(false);
           return;
         }
-        console.log('✅ Token found for virtual account creation:', token.substring(0, 20) + '...');
+        
+        // Validate token format (should be a JWT string, not an object)
+        if (typeof token !== 'string' || token.trim().length === 0) {
+          console.error('❌ Token is not a valid string:', typeof token, token);
+          setVirtualAccountError('Invalid authentication token. Please sign out and sign in again.');
+          setLoadingAccount(false);
+          return;
+        }
+        
+        console.log('✅ Token found for virtual account creation:', token.substring(0, 30) + '...');
+        console.log('✅ Token length:', token.length);
+        console.log('✅ Token type:', typeof token);
       } catch (authCheckError) {
         console.error('Error checking authentication:', authCheckError);
         setVirtualAccountError('Authentication check failed. Please try logging in again.');
@@ -113,8 +125,8 @@ export default function TransferPaymentScreen() {
         // Provide specific error messages based on error type
         let errorMessage = error.message || 'Failed to create virtual account. Please try again or use a different payment method.';
         
-        if (error.message && error.message.includes('Unauthorized')) {
-          errorMessage = 'Please log in to create a virtual account. You may need to sign out and sign in again.';
+        if (error.message && (error.message.includes('Unauthorized') || error.message.includes('401') || error.message.includes('session has expired'))) {
+          errorMessage = 'Your session has expired or you are not logged in. Please sign out and sign in again.';
         } else if (error.message && error.message.includes('Network error')) {
           errorMessage = 'Network error. Please check your connection and try again.';
         }

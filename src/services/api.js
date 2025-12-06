@@ -30,22 +30,72 @@ const apiRequest = async (endpoint, options = {}) => {
   const isAuthEndpoint = endpoint.includes('/auth/login') || endpoint.includes('/auth/register');
   const isPaymentEndpoint = endpoint.includes('/payments/');
   
-  try {
-    const token = await getAuthToken();
+  const token = await getAuthToken();
+  
+  // Debug logging for payment endpoints
+  if (isPaymentEndpoint) {
+    console.log('🔍 Payment endpoint - Token check:', {
+      hasToken: !!token,
+      tokenType: token ? typeof token : 'none',
+      tokenLength: token ? token.length : 0,
+      tokenPreview: token ? token.substring(0, 30) + '...' : 'none'
+    });
     
-    const defaultHeaders = {
-      'Content-Type': 'application/json',
-    };
-
-    if (token) {
-      defaultHeaders['Authorization'] = `Bearer ${token}`;
-      if (isPaymentEndpoint && __DEV__) {
-        console.log('✅ Payment request with token:', token.substring(0, 20) + '...');
+    // Also check AsyncStorage directly for debugging
+    try {
+      const userData = await AsyncStorage.getItem('user');
+      if (userData) {
+        const user = JSON.parse(userData);
+        console.log('🔍 AsyncStorage user data:', {
+          hasToken: !!user.token,
+          hasAccessToken: !!user.accessToken,
+          email: user.email,
+          allKeys: Object.keys(user)
+        });
+      } else {
+        console.warn('⚠️ No user data in AsyncStorage');
       }
-    } else if (isPaymentEndpoint) {
+    } catch (debugError) {
+      console.error('Error checking AsyncStorage:', debugError);
+    }
+  }
+  
+  const defaultHeaders = {
+    'Content-Type': 'application/json',
+  };
+
+  if (token) {
+    // Clean token (remove any quotes or whitespace)
+    const cleanToken = token.trim().replace(/^["']|["']$/g, '');
+    defaultHeaders['Authorization'] = `Bearer ${cleanToken}`;
+    if (isPaymentEndpoint && __DEV__) {
+      console.log('✅ Payment request with token:', cleanToken.substring(0, 30) + '...');
+      console.log('✅ Authorization header set:', `Bearer ${cleanToken.substring(0, 20)}...`);
+      console.log('✅ Full Authorization header length:', `Bearer ${cleanToken}`.length);
+    }
+  } else if (isPaymentEndpoint) {
       // For payment endpoints, log warning if no token
       console.error('❌ Payment endpoint requires authentication but no token found');
       console.error('Make sure you are logged in. Try signing out and signing in again.');
+      console.error('Checking AsyncStorage for user data...');
+      // Try to get user data directly for debugging
+      AsyncStorage.getItem('user').then(userData => {
+        if (userData) {
+          try {
+            const user = JSON.parse(userData);
+            console.error('User data found:', {
+              hasToken: !!user.token,
+              hasAccessToken: !!user.accessToken,
+              email: user.email,
+              keys: Object.keys(user)
+            });
+          } catch (e) {
+            console.error('Could not parse user data:', e);
+          }
+        } else {
+          console.error('No user data in AsyncStorage');
+        }
+      }).catch(err => console.error('Error reading AsyncStorage:', err));
     }
 
     const config = {
@@ -56,33 +106,67 @@ const apiRequest = async (endpoint, options = {}) => {
       },
     };
 
-    const response = await fetch(`${BASE_URL}${endpoint}`, config);
-    
-    // Handle non-JSON responses
-    const contentType = response.headers.get('content-type');
-    let data;
+    // Log request details for payment endpoints (in dev mode)
+    if (isPaymentEndpoint && __DEV__) {
+      const requestDetails = {
+        url: `${BASE_URL}${endpoint}`,
+        method: options.method || 'GET',
+        hasAuthHeader: !!defaultHeaders['Authorization'],
+        authHeaderPreview: defaultHeaders['Authorization'] ? 
+          defaultHeaders['Authorization'].substring(0, 30) + '...' : 'none',
+        allHeaders: { ...defaultHeaders }
+      };
+      console.log('📤 Making payment request:');
+      console.log(JSON.stringify(requestDetails, null, 2));
+      console.log('Full request object:', requestDetails);
+    }
     
     try {
-      if (contentType && contentType.includes('application/json')) {
-        data = await response.json();
-      } else {
-        const textData = await response.text();
-        // Try to parse as JSON if it looks like JSON
-        try {
-          data = JSON.parse(textData);
-        } catch {
-          data = textData;
+      const response = await fetch(`${BASE_URL}${endpoint}`, config);
+    
+    // Log response details for payment endpoints (in dev mode)
+    if (isPaymentEndpoint && __DEV__) {
+      console.log('📥 Payment response received:', {
+        status: response.status,
+        statusText: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        ok: response.ok
+      });
+    }
+    
+    // Handle response body - read it carefully, handling empty responses
+    const contentType = response.headers.get('content-type');
+    let data = null;
+    let responseText = '';
+    
+    try {
+      // Always read as text first to handle empty responses
+      responseText = await response.text();
+      
+      if (responseText && responseText.trim().length > 0) {
+        // If we have content, try to parse as JSON if it looks like JSON
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            data = JSON.parse(responseText);
+          } catch (parseError) {
+            // Not valid JSON despite content-type, use as text
+            data = responseText;
+          }
+        } else {
+          // Not JSON content-type, try to parse anyway (some APIs don't set content-type correctly)
+          try {
+            data = JSON.parse(responseText);
+          } catch {
+            data = responseText;
+          }
         }
+      } else {
+        // Empty response body
+        data = '[no body]';
       }
-    } catch (parseError) {
-      console.error('Error parsing response:', parseError);
-      // For error responses, try to get text
-      try {
-        const textData = await response.text();
-        data = { error: textData || `Server error (${response.status})`, message: textData || `Server error (${response.status})` };
-      } catch {
-        data = { error: `Server error (${response.status})`, message: `Server error (${response.status})` };
-      }
+    } catch (readError) {
+      console.error('Error reading response body:', readError);
+      data = '[no body]';
     }
 
     if (!response.ok) {
@@ -197,34 +281,73 @@ const apiRequest = async (endpoint, options = {}) => {
       
       // For payment endpoints, throw errors so they can be handled properly
       if (isPaymentEndpoint) {
-        // Try to extract error message from various response formats
+        // Use actual HTTP status code, not error message
+        const httpStatus = response.status;
         let errorMessage = '';
         
-        if (typeof data === 'string') {
-          errorMessage = data;
+        // If response has no body or empty body
+        if (!data || data === '[no body]' || (typeof data === 'string' && data.trim() === '')) {
+          if (httpStatus === 401) {
+            errorMessage = 'Authentication failed. Your session may have expired. Please sign out and sign in again.';
+          } else if (httpStatus === 403) {
+            errorMessage = 'Access denied. You do not have permission to perform this action.';
+          } else if (httpStatus === 500) {
+            errorMessage = 'Server error. The backend may not have Flutterwave credentials configured in Railway. Please check Railway environment variables: FLUTTERWAVE_CLIENT_ID, FLUTTERWAVE_CLIENT_SECRET, FLUTTERWAVE_ENCRYPTION_KEY';
+          } else {
+            errorMessage = `Server error (${httpStatus}). Please check backend logs.`;
+          }
+        } else if (typeof data === 'string') {
+          // For 500 errors, provide more helpful message
+          if (httpStatus === 500) {
+            errorMessage = `Backend error (500): ${data}. This usually means Flutterwave credentials are missing in Railway. Check Railway environment variables.`;
+          } else {
+            errorMessage = data;
+          }
         } else if (typeof data === 'object' && data) {
-          errorMessage = data.error || data.message || data.errorMessage || JSON.stringify(data);
+          // Extract error message, but prioritize HTTP status
+          const extractedMsg = data.message || data.error || data.errorMessage;
+          if (httpStatus === 500) {
+            // For 500 errors, provide more helpful message about Flutterwave config
+            errorMessage = extractedMsg ? 
+              `Backend error (500): ${extractedMsg}. Check Railway backend logs and ensure Flutterwave environment variables are set.` :
+              'Server error (500). Backend may not have Flutterwave credentials configured. Check Railway environment variables: FLUTTERWAVE_CLIENT_ID, FLUTTERWAVE_CLIENT_SECRET, FLUTTERWAVE_ENCRYPTION_KEY';
+          } else if (httpStatus === 401 || httpStatus === 403) {
+            // For auth errors, use extracted message or default
+            errorMessage = extractedMsg || 'Authentication failed. Please sign out and sign in again.';
+          } else {
+            errorMessage = extractedMsg || JSON.stringify(data);
+          }
         }
         
-        // If still no error message, provide default based on status
+        // Fallback error message if still empty
         if (!errorMessage || errorMessage.trim() === '') {
-          if (response.status === 401 || response.status === 403) {
-            errorMessage = 'Authentication failed. Please sign out and sign in again to refresh your session.';
-          } else if (response.status === 500) {
-            errorMessage = 'Server error. The backend may not have Flutterwave credentials configured. Please check backend logs.';
+          if (httpStatus === 401 || httpStatus === 403) {
+            if (!token) {
+              errorMessage = 'You must be logged in to create a virtual account. Please sign in first.';
+            } else {
+              errorMessage = 'Your session has expired. Please sign out and sign in again to refresh your authentication token.';
+            }
+          } else if (httpStatus === 500) {
+            errorMessage = 'Server error (500). The backend may not have Flutterwave credentials configured in Railway. Please check Railway environment variables and backend logs.';
           } else {
-            errorMessage = `Payment API error (${response.status})`;
+            errorMessage = `Payment API error (${httpStatus}). Check your authentication and try again.`;
           }
         }
         
         // Log full error details for debugging
-        console.error('❌ Payment endpoint error:', {
+        const errorDetails = {
           status: response.status,
           endpoint,
           errorMessage,
           responseData: data,
-          hasToken: !!token
-        });
+          hasToken: !!token,
+          tokenPreview: token ? token.substring(0, 30) + '...' : 'none',
+          tokenLength: token ? token.length : 0,
+          responseHeaders: Object.fromEntries(response.headers.entries())
+        };
+        console.error('❌ Payment endpoint error:');
+        console.error(JSON.stringify(errorDetails, null, 2));
+        console.error('Full error object:', errorDetails);
         
         const error = new Error(errorMessage);
         error.status = response.status;
