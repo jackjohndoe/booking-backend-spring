@@ -35,6 +35,13 @@
     <logger name="org.springframework.web" level="WARN"/>
     <logger name="org.springframework.security" level="WARN"/>
     <logger name="org.springframework.boot" level="WARN"/>
+    <logger name="org.springframework.boot.autoconfigure" level="WARN"/>
+    <logger name="org.springframework.boot.factories" level="WARN"/>
+    <logger name="org.springframework.boot.context" level="WARN"/>
+    <logger name="org.springframework.context" level="WARN"/>
+    <logger name="org.springframework.beans" level="WARN"/>
+    <logger name="org.springframework.beans.factory" level="WARN"/>
+    <logger name="org.springframework.beans.factory.support" level="WARN"/>
     <logger name="org.springframework.orm" level="WARN"/>
     <logger name="org.springframework.orm.jpa" level="WARN"/>
     <logger name="org.springframework.transaction" level="WARN"/>
@@ -50,10 +57,16 @@
     <logger name="com.zaxxer.hikari.pool" level="WARN"/>
     <logger name="com.zaxxer.hikari.pool.HikariPool" level="WARN"/>
     
+    <!-- SpringDoc/Swagger - WARN level (reduces startup logs) -->
+    <logger name="org.springdoc" level="WARN"/>
+    
     <!-- Tomcat/Jakarta - WARN level -->
     <logger name="org.apache.catalina" level="WARN"/>
     <logger name="org.apache.coyote" level="WARN"/>
     <logger name="org.apache.tomcat" level="WARN"/>
     <logger name="jakarta" level="WARN"/>
+    
+    <!-- Netty (if used) - WARN level -->
+    <logger name="io.netty" level="WARN"/>
 </configuration>
 
