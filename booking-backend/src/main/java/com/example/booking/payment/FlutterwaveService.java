@@ -94,7 +94,10 @@ public class FlutterwaveService {
             return accessToken;
         }
 
-        log.debug("Requesting new OAuth 2.0 access token from Flutterwave");
+        log.info("Requesting new OAuth 2.0 access token from Flutterwave (using LIVE credentials)");
+        log.info("OAuth endpoint: {}", OAUTH_TOKEN_URL);
+        log.info("Client ID present: {}", clientId != null && !clientId.trim().isEmpty());
+        log.info("Client Secret present: {}", clientSecret != null && !clientSecret.trim().isEmpty());
         
         try {
             HttpHeaders headers = new HttpHeaders();
@@ -107,6 +110,7 @@ public class FlutterwaveService {
             formData.add("client_secret", clientSecret);
             
             HttpEntity<MultiValueMap<String, String>> entity = new HttpEntity<>(formData, headers);
+            log.info("Sending OAuth token request to Flutterwave...");
             ResponseEntity<OAuthTokenResponse> response = restTemplate.exchange(
                     OAUTH_TOKEN_URL,
                     HttpMethod.POST,
@@ -114,25 +118,32 @@ public class FlutterwaveService {
                     OAuthTokenResponse.class
             );
 
+            log.info("OAuth token request completed. HTTP Status: {}", response.getStatusCode());
             OAuthTokenResponse tokenResponse = response.getBody();
             if (tokenResponse != null && tokenResponse.getAccessToken() != null) {
                 accessToken = tokenResponse.getAccessToken();
                 // Set expiration time (subtract 5 minutes for safety buffer)
                 int expiresIn = tokenResponse.getExpiresIn() != null ? tokenResponse.getExpiresIn() : 3600;
                 tokenExpiresAt = LocalDateTime.now().plusSeconds(expiresIn - 300); // 5 min buffer
-                log.debug("OAuth token obtained successfully, expires at: {}", tokenExpiresAt);
+                log.info("✅ OAuth token obtained successfully. Length: {}, Expires at: {}", 
+                        accessToken.length(), tokenExpiresAt);
                 return accessToken;
             } else {
-                log.error("Failed to obtain OAuth token: Invalid response");
-                throw new RuntimeException("Failed to obtain Flutterwave OAuth token: Invalid response");
+                log.error("❌ Failed to obtain OAuth token: Invalid response - tokenResponse is null or has no access_token");
+                if (tokenResponse != null) {
+                    log.error("Response message: {}", tokenResponse.getMessage());
+                }
+                throw new RuntimeException("Failed to obtain Flutterwave OAuth token: Invalid response - no access_token in response");
             }
         } catch (HttpClientErrorException | HttpServerErrorException e) {
-            log.error("Flutterwave OAuth token error: HTTP {} - {}", 
-                    e.getStatusCode().value(), e.getResponseBodyAsString());
-            throw new RuntimeException("Failed to obtain Flutterwave OAuth token: " + 
-                    e.getResponseBodyAsString(), e);
+            String responseBody = e.getResponseBodyAsString();
+            log.error("❌ Flutterwave OAuth token error: HTTP {} - Response: '{}'", 
+                    e.getStatusCode().value(), responseBody != null ? responseBody : "[empty]");
+            log.error("OAuth token request failed. Check if Client ID and Secret are correct for LIVE environment.");
+            throw new RuntimeException("Failed to obtain Flutterwave OAuth token (HTTP " + 
+                    e.getStatusCode().value() + "): " + (responseBody != null ? responseBody : "Empty response"), e);
         } catch (RestClientException e) {
-            log.error("Network error obtaining OAuth token", e);
+            log.error("❌ Network error obtaining OAuth token: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to obtain Flutterwave OAuth token: Network error - " + 
                     e.getMessage(), e);
         }
