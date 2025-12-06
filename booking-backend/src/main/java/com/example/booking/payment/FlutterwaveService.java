@@ -217,8 +217,24 @@ public class FlutterwaveService {
             }
         } catch (HttpClientErrorException | HttpServerErrorException e) {
             String responseBody = e.getResponseBodyAsString();
-            log.error("Flutterwave API error creating virtual account: HTTP {} - {}", 
-                    e.getStatusCode().value(), responseBody);
+            int statusCode = e.getStatusCode().value();
+            log.error("Flutterwave API error creating virtual account: HTTP {} - Response body: '{}'", 
+                    statusCode, responseBody != null ? responseBody : "[empty]");
+            
+            // Log additional details for 401 errors
+            if (statusCode == 401) {
+                log.error("Flutterwave returned 401 Unauthorized. Possible causes:");
+                log.error("  1. OAuth token is invalid or expired");
+                log.error("  2. OAuth token was not obtained successfully");
+                log.error("  3. Token format is incorrect");
+                log.error("  4. Client ID/Secret are incorrect");
+                // Check if we have a token
+                if (accessToken != null) {
+                    log.error("  Current access token exists (length: {})", accessToken.length());
+                } else {
+                    log.error("  WARNING: No access token cached - OAuth may have failed silently");
+                }
+            }
             
             // Try to extract error message from Flutterwave response
             String errorMessage = "Flutterwave API returned error";
