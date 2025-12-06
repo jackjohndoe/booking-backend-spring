@@ -189,7 +189,7 @@ public class ApartmentController {
             
             // Create a new page response with filtered content
             return ResponseEntity.ok(PageResponse.from(
-                    org.springframework.data.domain.Page.of(filteredContent, pageable, filteredContent.size())
+                    new org.springframework.data.domain.PageImpl<>(filteredContent, pageable, filteredContent.size())
             ));
         }
         
