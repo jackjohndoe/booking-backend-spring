@@ -720,6 +720,7 @@ public class FlutterwaveService {
         private String message;
 
         // Manual getters (Lombok not working in Docker build)
+        // These getters are required for WalletServiceImpl to access transaction verification data
         public String getTxRef() {
             return txRef;
         }
