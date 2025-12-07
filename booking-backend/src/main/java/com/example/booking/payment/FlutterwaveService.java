@@ -720,12 +720,28 @@ public class FlutterwaveService {
         private String message;
 
         // Manual getters (Lombok not working in Docker build)
-        public String getStatus() {
-            return status;
+        public String getTxRef() {
+            return txRef;
         }
 
         public String getFlwRef() {
             return flwRef;
+        }
+
+        public String getStatus() {
+            return status;
+        }
+
+        public BigDecimal getAmount() {
+            return amount;
+        }
+
+        public String getCurrency() {
+            return currency;
+        }
+
+        public String getMessage() {
+            return message;
         }
 
         // Builder pattern methods (replacing @lombok.Builder)
