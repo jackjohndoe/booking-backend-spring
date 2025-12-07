@@ -699,11 +699,69 @@ public class WalletServiceImpl implements WalletService {
         try {
             log.info("Syncing all transactions from Flutterwave for user {}", user.getId());
             
+            // Get or create wallet
+            Wallet wallet = getOrCreateWallet(user);
+            
             // First, sync balance from existing transactions
             syncBalanceWithFlutterwave(user);
             
-            // Get all pending transactions for this user
-            Wallet wallet = walletRepository.findByUserId(user.getId()).orElse(null);
+            // Fetch transactions from Flutterwave API
+            java.util.List<FlutterwaveService.TransactionVerification> flutterwaveTransactions = 
+                flutterwaveService.fetchTransactionsByEmail(user.getEmail());
+            
+            log.info("Fetched {} transactions from Flutterwave for user {}", flutterwaveTransactions.size(), user.getId());
+            
+            int newTransactionsAdded = 0;
+            int existingTransactionsSkipped = 0;
+            
+            // Process each transaction from Flutterwave
+            for (FlutterwaveService.TransactionVerification verification : flutterwaveTransactions) {
+                if (verification.getTxRef() == null || verification.getTxRef().isEmpty()) {
+                    continue;
+                }
+                
+                try {
+                    // Check if transaction already exists in database
+                    java.util.Optional<Transaction> existingTx = transactionRepository.findByFlutterwaveTxRef(verification.getTxRef());
+                    
+                    if (existingTx.isPresent()) {
+                        // Transaction already exists, skip
+                        existingTransactionsSkipped++;
+                        log.debug("Transaction {} already exists in database, skipping", verification.getTxRef());
+                        continue;
+                    }
+                    
+                    // Transaction doesn't exist, create it
+                    BigDecimal amount = verification.getAmount() != null ? verification.getAmount() : BigDecimal.ZERO;
+                    
+                    Transaction newTransaction = Transaction.builder()
+                            .wallet(wallet)
+                            .user(user)
+                            .type(Transaction.Type.DEPOSIT)
+                            .status(Transaction.Status.COMPLETED)
+                            .amount(amount)
+                            .currency(verification.getCurrency() != null ? verification.getCurrency() : "NGN")
+                            .description("Wallet deposit via Flutterwave (synced)")
+                            .reference(verification.getTxRef())
+                            .flutterwaveTxRef(verification.getTxRef())
+                            .flutterwaveFlwRef(verification.getFlwRef())
+                            .flutterwaveStatus(verification.getStatus())
+                            .processedAt(java.time.OffsetDateTime.now())
+                            .createdAt(java.time.OffsetDateTime.now())
+                            .build();
+                    
+                    transactionRepository.save(newTransaction);
+                    newTransactionsAdded++;
+                    log.info("Added missing transaction from Flutterwave: txRef={}, amount={}", 
+                            verification.getTxRef(), amount);
+                } catch (Exception e) {
+                    log.warn("Failed to process transaction {} from Flutterwave: {}", 
+                            verification.getTxRef(), e.getMessage());
+                    // Continue with other transactions
+                }
+            }
+            
+            // Get all pending transactions for this user and verify them
             java.util.List<Transaction> pendingTransactions = java.util.Collections.emptyList();
             if (wallet != null) {
                 pendingTransactions = transactionRepository.findByWalletIdAndStatus(wallet.getId(), Transaction.Status.PENDING);
@@ -726,7 +784,8 @@ public class WalletServiceImpl implements WalletService {
             
             // Final sync to ensure balance is correct
             syncBalanceWithFlutterwave(user);
-            log.info("Completed syncing all transactions for user {}", user.getId());
+            log.info("Completed syncing all transactions for user {}: Added {} new transactions, Skipped {} existing transactions", 
+                    user.getId(), newTransactionsAdded, existingTransactionsSkipped);
         } catch (Exception e) {
             log.error("Error syncing all transactions for user {}: {}", user.getId(), e.getMessage(), e);
             throw new RuntimeException("Failed to sync all transactions: " + e.getMessage(), e);
