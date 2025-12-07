@@ -48,6 +48,22 @@ public class User {
     @Builder.Default
     private Set<Listing> listings = new HashSet<>();
 
+    // Static virtual account fields for wallet funding
+    @Column(name = "virtual_account_number")
+    private String virtualAccountNumber;
+
+    @Column(name = "virtual_account_bank")
+    private String virtualAccountBank;
+
+    @Column(name = "virtual_account_name")
+    private String virtualAccountName;
+
+    @Column(name = "virtual_account_flw_ref")
+    private String virtualAccountFlwRef;
+
+    @Column(name = "virtual_account_created_at")
+    private java.time.LocalDateTime virtualAccountCreatedAt;
+
     public enum Role {
         GUEST,
         HOST,
