@@ -56,24 +56,36 @@ public class WalletServiceImpl implements WalletService {
                 .orElseGet(() -> {
                     Wallet newWallet = Wallet.builder()
                             .user(user)
-                            .balance(BigDecimal.ZERO)
+                            .balance(BigDecimal.ZERO) // Initial balance, will be synced immediately
                             .currency("NGN")
                             .status(Wallet.Status.ACTIVE)
                             .build();
-                    return walletRepository.save(newWallet);
+                    Wallet saved = walletRepository.save(newWallet);
+                    
+                    // Immediately sync balance to ensure it reflects all existing transactions
+                    // This is critical - even if wallet is new, there might be existing transactions
+                    try {
+                        syncBalanceWithFlutterwave(user);
+                        // Refresh wallet after sync to get correct balance
+                        return walletRepository.findByUserId(user.getId()).orElse(saved);
+                    } catch (Exception e) {
+                        log.warn("Failed to sync balance for newly created wallet for user {}: {}", user.getId(), e.getMessage());
+                        return saved;
+                    }
                 });
         
-        // Sync balance if it hasn't been synced recently (within last 30 seconds)
-        // This ensures balance is accurate without syncing on every request
+        // Always sync balance to ensure it reflects the sum of ALL transactions
+        // This ensures balance is never stale or incorrect
+        // Sync if it hasn't been synced recently (within last 30 seconds)
         if (wallet.getLastSyncedAt() == null || 
             wallet.getLastSyncedAt().isBefore(java.time.OffsetDateTime.now().minusSeconds(30))) {
             try {
                 syncBalanceWithFlutterwave(user);
-                // Refresh wallet after sync
+                // Refresh wallet after sync to get correct balance
                 wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
             } catch (Exception e) {
                 log.warn("Failed to sync balance when retrieving wallet for user {}: {}", user.getId(), e.getMessage());
-                // Continue with existing balance if sync fails
+                // Continue with existing balance if sync fails, but log the issue
             }
         }
         
@@ -133,10 +145,9 @@ public class WalletServiceImpl implements WalletService {
                     saved.setFlutterwaveFlwRef(verification.getFlwRef());
                     saved.setFlutterwaveStatus(verification.getStatus());
                     saved.setProcessedAt(java.time.OffsetDateTime.now());
-                    wallet.setBalance(wallet.getBalance().add(request.getAmount()));
-                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
                     transactionRepository.save(saved);
-                    walletRepository.save(wallet);
+                    // Recalculate balance from all transactions instead of incremental update
+                    syncBalanceWithFlutterwave(user);
                 }
             } catch (Exception e) {
                 // Verification failed, transaction remains pending - webhook will update it
@@ -192,12 +203,10 @@ public class WalletServiceImpl implements WalletService {
                     .reference(reference)
                     .build();
 
-            // Deduct from wallet immediately (Flutterwave will process the transfer)
-            wallet.setBalance(wallet.getBalance().subtract(request.getAmount()));
-            wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
-
+            // Create transaction first, then recalculate balance from all transactions
             Transaction saved = transactionRepository.save(transaction);
-            walletRepository.save(wallet);
+            // Recalculate balance from all transactions instead of incremental update
+            syncBalanceWithFlutterwave(user);
 
             return toTransactionResponse(saved);
         } catch (Exception e) {
@@ -244,13 +253,14 @@ public class WalletServiceImpl implements WalletService {
         boolean isWalletPayment = wallet != null;
 
         if (isWalletPayment) {
+            // Sync balance first to get accurate current balance
+            syncBalanceWithFlutterwave(user);
+            wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
             if (wallet.getBalance().compareTo(amount) < 0) {
                 throw new BadRequestException("Insufficient wallet balance for escrow. Your current balance is " + 
                         wallet.getBalance() + " " + wallet.getCurrency() + ", but the booking requires " + 
                         amount + " " + wallet.getCurrency() + ". Please deposit funds to your wallet or use a different payment method.");
             }
-            wallet.setBalance(wallet.getBalance().subtract(amount));
-            walletRepository.save(wallet);
         }
 
         Transaction transaction = Transaction.builder()
@@ -267,6 +277,11 @@ public class WalletServiceImpl implements WalletService {
 
         transaction.setProcessedAt(java.time.OffsetDateTime.now());
         transactionRepository.save(transaction);
+        
+        // Recalculate balance from all transactions instead of incremental update
+        if (isWalletPayment) {
+            syncBalanceWithFlutterwave(user);
+        }
     }
 
     @Override
@@ -323,8 +338,8 @@ public class WalletServiceImpl implements WalletService {
         feeTransaction.setProcessedAt(java.time.OffsetDateTime.now());
         transactionRepository.save(feeTransaction);
 
-        hostWallet.setBalance(hostWallet.getBalance().add(hostAmount));
-        walletRepository.save(hostWallet);
+        // Recalculate balance from all transactions instead of incremental update
+        syncBalanceWithFlutterwave(host);
     }
 
     @Override
@@ -372,9 +387,9 @@ public class WalletServiceImpl implements WalletService {
         refundTransaction.setProcessedAt(java.time.OffsetDateTime.now());
         transactionRepository.save(refundTransaction);
 
+        // Recalculate balance from all transactions instead of incremental update
         if (isWalletPayment && userWallet != null) {
-            userWallet.setBalance(userWallet.getBalance().add(escrowHold.getAmount()));
-            walletRepository.save(userWallet);
+            syncBalanceWithFlutterwave(booking.getUser());
         }
     }
 
@@ -438,10 +453,11 @@ public class WalletServiceImpl implements WalletService {
                     transaction.setFlutterwaveFlwRef(flwRef);
                     transaction.setFlutterwaveStatus(status);
                     transaction.setProcessedAt(java.time.OffsetDateTime.now());
-                    wallet.setBalance(wallet.getBalance().add(amount));
-                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
                     transactionRepository.save(transaction);
-                    walletRepository.save(wallet);
+                    // Recalculate balance from all transactions instead of incremental update
+                    // This ensures balance always reflects the sum of all transactions
+                    syncBalanceWithFlutterwave(wallet.getUser());
+                    wallet = walletRepository.findByUserId(wallet.getUser().getId()).orElse(wallet);
                     log.info("Wallet credited via webhook: userId={}, amount={}, oldBalance={}, newBalance={}", 
                             wallet.getUser().getId(), amount, oldBalance, wallet.getBalance());
                 } else if (!isSuccessful) {
@@ -472,10 +488,10 @@ public class WalletServiceImpl implements WalletService {
                     transaction.setStatus(Transaction.Status.FAILED);
                     transaction.setFlutterwaveStatus(status);
                     transaction.setProcessedAt(java.time.OffsetDateTime.now());
-                    wallet.setBalance(wallet.getBalance().add(amount)); // Refund
-                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
                     transactionRepository.save(transaction);
-                    walletRepository.save(wallet);
+                    // Recalculate balance from all transactions instead of incremental update
+                    syncBalanceWithFlutterwave(wallet.getUser());
+                    wallet = walletRepository.findByUserId(wallet.getUser().getId()).orElse(wallet);
                     log.warn("Withdrawal failed via webhook, refunded: txRef={}, status={}, oldBalance={}, newBalance={}", 
                             txRef, status, oldBalance, wallet.getBalance());
                 } else {
@@ -498,8 +514,15 @@ public class WalletServiceImpl implements WalletService {
                 return;
             }
 
-            // Recalculate balance from completed transactions
-            // Handle null values from sum queries
+            // Get all transactions for this wallet to verify calculation
+            java.util.List<Transaction> allTransactions = transactionRepository.findByWalletIdOrderByCreatedAtDesc(
+                    wallet.getId(), org.springframework.data.domain.PageRequest.of(0, 1000))
+                    .getContent();
+            
+            log.debug("Found {} total transactions for wallet {}", allTransactions.size(), wallet.getId());
+
+            // Recalculate balance from ALL completed transactions
+            // This ensures balance reflects the sum of all money added minus all money withdrawn
             BigDecimal deposits = transactionRepository.sumAmountByWalletAndTypes(
                     wallet.getId(),
                     java.util.Arrays.asList(
@@ -524,18 +547,52 @@ public class WalletServiceImpl implements WalletService {
                 withdrawals = BigDecimal.ZERO;
             }
 
+            // Calculate balance: deposits - withdrawals
+            // This represents the sum of all money user has added minus all money withdrawn
             BigDecimal calculatedBalance = deposits.subtract(withdrawals);
             
+            // Log detailed calculation for debugging
+            log.info("Balance calculation for user {}: deposits={}, withdrawals={}, calculatedBalance={}", 
+                    user.getId(), deposits, withdrawals, calculatedBalance);
+            
+            // Count completed transactions for logging
+            long completedDeposits = allTransactions.stream()
+                    .filter(t -> (t.getType() == Transaction.Type.DEPOSIT || 
+                                 t.getType() == Transaction.Type.ESCROW_RELEASE || 
+                                 t.getType() == Transaction.Type.BOOKING_REFUND) &&
+                                t.getStatus() == Transaction.Status.COMPLETED)
+                    .count();
+            long completedWithdrawals = allTransactions.stream()
+                    .filter(t -> (t.getType() == Transaction.Type.WITHDRAWAL || 
+                                 t.getType() == Transaction.Type.ESCROW_HOLD || 
+                                 t.getType() == Transaction.Type.BOOKING_PAYMENT) &&
+                                t.getStatus() == Transaction.Status.COMPLETED)
+                    .count();
+            
+            log.debug("Completed transactions: {} deposits, {} withdrawals", completedDeposits, completedWithdrawals);
+            
             // Ensure balance is not negative (shouldn't happen, but safety check)
+            // However, we should allow negative if user has pending withdrawals that exceed balance
+            // For now, we'll log a warning but keep the calculated balance
             if (calculatedBalance.compareTo(BigDecimal.ZERO) < 0) {
-                log.warn("Calculated balance is negative for user {}: {}. Setting to 0.", user.getId(), calculatedBalance);
-                calculatedBalance = BigDecimal.ZERO;
+                log.warn("Calculated balance is negative for user {}: {}. This may indicate pending transactions.", 
+                        user.getId(), calculatedBalance);
+                // Don't set to zero - keep the actual calculated balance
             }
 
+            // Always update balance to reflect the sum of all transactions
+            // This ensures balance is never reset to 0 if there are existing transactions
+            BigDecimal oldBalance = wallet.getBalance();
             wallet.setBalance(calculatedBalance);
             wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
             walletRepository.save(wallet);
-            log.info("Balance synced for user {}: newBalance={}", user.getId(), calculatedBalance);
+            
+            if (!oldBalance.equals(calculatedBalance)) {
+                log.info("Balance updated for user {}: oldBalance={}, newBalance={}", 
+                        user.getId(), oldBalance, calculatedBalance);
+            } else {
+                log.debug("Balance unchanged for user {}: {}", user.getId(), calculatedBalance);
+            }
         } catch (Exception e) {
             log.error("Error syncing balance for user {}: {}", user.getId(), e.getMessage(), e);
             throw new RuntimeException("Failed to sync wallet balance: " + e.getMessage(), e);
@@ -590,17 +647,17 @@ public class WalletServiceImpl implements WalletService {
             if (existingTransaction != null) {
                 // Update existing transaction
                 if (existingTransaction.getStatus() != Transaction.Status.COMPLETED) {
-                    BigDecimal oldBalance = wallet.getBalance();
-                    existingTransaction.setStatus(Transaction.Status.COMPLETED);
-                    existingTransaction.setFlutterwaveFlwRef(verification.getFlwRef());
-                    existingTransaction.setFlutterwaveStatus(verification.getStatus());
-                    existingTransaction.setProcessedAt(java.time.OffsetDateTime.now());
-                    wallet.setBalance(wallet.getBalance().add(amount));
-                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
-                    transactionRepository.save(existingTransaction);
-                    walletRepository.save(wallet);
-                    log.info("Transaction updated and wallet credited: userId={}, amount={}, oldBalance={}, newBalance={}", 
-                            user.getId(), amount, oldBalance, wallet.getBalance());
+                BigDecimal oldBalance = wallet.getBalance();
+                existingTransaction.setStatus(Transaction.Status.COMPLETED);
+                existingTransaction.setFlutterwaveFlwRef(verification.getFlwRef());
+                existingTransaction.setFlutterwaveStatus(verification.getStatus());
+                existingTransaction.setProcessedAt(java.time.OffsetDateTime.now());
+                transactionRepository.save(existingTransaction);
+                // Recalculate balance from all transactions instead of incremental update
+                syncBalanceWithFlutterwave(user);
+                wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
+                log.info("Transaction updated and wallet credited: userId={}, amount={}, oldBalance={}, newBalance={}", 
+                        user.getId(), amount, oldBalance, wallet.getBalance());
                 } else {
                     log.info("Transaction {} already completed", txRef);
                 }
@@ -623,10 +680,10 @@ public class WalletServiceImpl implements WalletService {
                         .build();
                 
                 BigDecimal oldBalance = wallet.getBalance();
-                wallet.setBalance(wallet.getBalance().add(amount));
-                wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
                 Transaction saved = transactionRepository.save(newTransaction);
-                walletRepository.save(wallet);
+                // Recalculate balance from all transactions instead of incremental update
+                syncBalanceWithFlutterwave(user);
+                wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
                 log.info("New transaction created and wallet credited: userId={}, amount={}, oldBalance={}, newBalance={}", 
                         user.getId(), amount, oldBalance, wallet.getBalance());
                 return toTransactionResponse(saved);
