@@ -56,23 +56,54 @@ public class FlutterwaveService {
             @Value("${flutterwave.client-id:}") String clientId,
             @Value("${flutterwave.client-secret:}") String clientSecret,
             @Value("${flutterwave.encryption-key:}") String encryptionKey) {
-        this.clientId = clientId;
-        this.clientSecret = clientSecret;
-        this.encryptionKey = encryptionKey;
+        // Try property values first, then fallback to direct environment variable reading
+        String envClientId = System.getenv("FLUTTERWAVE_CLIENT_ID");
+        String envClientSecret = System.getenv("FLUTTERWAVE_CLIENT_SECRET");
+        String envEncryptionKey = System.getenv("FLUTTERWAVE_ENCRYPTION_KEY");
+        
+        // Use environment variable if property is empty, otherwise use property value
+        this.clientId = (clientId != null && !clientId.trim().isEmpty()) ? clientId : 
+                       (envClientId != null && !envClientId.trim().isEmpty() ? envClientId : null);
+        this.clientSecret = (clientSecret != null && !clientSecret.trim().isEmpty()) ? clientSecret : 
+                           (envClientSecret != null && !envClientSecret.trim().isEmpty() ? envClientSecret : null);
+        this.encryptionKey = (encryptionKey != null && !encryptionKey.trim().isEmpty()) ? encryptionKey : 
+                            (envEncryptionKey != null && !envEncryptionKey.trim().isEmpty() ? envEncryptionKey : null);
+        
         this.restTemplate = createRestTemplate();
     }
 
     @PostConstruct
     public void validateConfiguration() {
+        // Check both property and environment variable sources
+        String envClientId = System.getenv("FLUTTERWAVE_CLIENT_ID");
+        String envClientSecret = System.getenv("FLUTTERWAVE_CLIENT_SECRET");
+        String envEncryptionKey = System.getenv("FLUTTERWAVE_ENCRYPTION_KEY");
+        
+        log.info("Flutterwave Configuration Check:");
+        log.info("  Property client-id: {}", (clientId != null && !clientId.trim().isEmpty()) ? "SET (length: " + clientId.length() + ")" : "NOT SET");
+        log.info("  Property client-secret: {}", (clientSecret != null && !clientSecret.trim().isEmpty()) ? "SET (length: " + clientSecret.length() + ")" : "NOT SET");
+        log.info("  Property encryption-key: {}", (encryptionKey != null && !encryptionKey.trim().isEmpty()) ? "SET (length: " + encryptionKey.length() + ")" : "NOT SET");
+        log.info("  Env FLUTTERWAVE_CLIENT_ID: {}", (envClientId != null && !envClientId.trim().isEmpty()) ? "SET (length: " + envClientId.length() + ")" : "NOT SET");
+        log.info("  Env FLUTTERWAVE_CLIENT_SECRET: {}", (envClientSecret != null && !envClientSecret.trim().isEmpty()) ? "SET (length: " + envClientSecret.length() + ")" : "NOT SET");
+        log.info("  Env FLUTTERWAVE_ENCRYPTION_KEY: {}", (envEncryptionKey != null && !envEncryptionKey.trim().isEmpty()) ? "SET (length: " + envEncryptionKey.length() + ")" : "NOT SET");
+        
         if (clientId == null || clientId.trim().isEmpty()) {
             log.warn("Flutterwave client ID is not configured. Virtual account creation will fail.");
+            log.warn("  Please set FLUTTERWAVE_CLIENT_ID environment variable in Railway.");
         }
         if (clientSecret == null || clientSecret.trim().isEmpty()) {
             log.warn("Flutterwave client secret is not configured. Virtual account creation will fail.");
+            log.warn("  Please set FLUTTERWAVE_CLIENT_SECRET environment variable in Railway.");
         }
         if (clientId != null && !clientId.trim().isEmpty() && 
             clientSecret != null && !clientSecret.trim().isEmpty()) {
-            log.info("FlutterwaveService initialized successfully");
+            log.info("✅ FlutterwaveService initialized successfully with credentials");
+        } else {
+            log.error("❌ FlutterwaveService initialized but credentials are missing!");
+            log.error("  Set these in Railway Variables:");
+            log.error("    FLUTTERWAVE_CLIENT_ID");
+            log.error("    FLUTTERWAVE_CLIENT_SECRET");
+            log.error("    FLUTTERWAVE_ENCRYPTION_KEY");
         }
     }
 
