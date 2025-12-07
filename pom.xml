@@ -116,9 +116,9 @@
                             <version>1.18.30</version>
                         </path>
                     </annotationProcessorPaths>
-                    <proc>full</proc>
                     <compilerArgs>
                         <arg>-parameters</arg>
+                        <arg>-proc:full</arg>
                     </compilerArgs>
                     <useIncrementalCompilation>false</useIncrementalCompilation>
                 </configuration>
