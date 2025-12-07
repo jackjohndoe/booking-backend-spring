@@ -699,11 +699,24 @@ public class WalletServiceImpl implements WalletService {
         try {
             log.info("Syncing all transactions from Flutterwave for user {}", user.getId());
             
-            // Get or create wallet
-            Wallet wallet = getOrCreateWallet(user);
+            // Get or create wallet entity
+            Wallet wallet = walletRepository.findByUserId(user.getId()).orElse(null);
+            if (wallet == null) {
+                // Create wallet if it doesn't exist
+                wallet = Wallet.builder()
+                        .user(user)
+                        .balance(BigDecimal.ZERO)
+                        .currency("NGN")
+                        .status(Wallet.Status.ACTIVE)
+                        .build();
+                wallet = walletRepository.save(wallet);
+            }
             
             // First, sync balance from existing transactions
             syncBalanceWithFlutterwave(user);
+            
+            // Refresh wallet after sync
+            wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
             
             // Fetch transactions from Flutterwave API
             java.util.List<FlutterwaveService.TransactionVerification> flutterwaveTransactions = 
