@@ -22,4 +22,12 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long> 
     @Query("SELECT SUM(t.amount) FROM Transaction t WHERE t.wallet.id = :walletId AND t.status = 'COMPLETED' AND t.type IN :types")
     java.math.BigDecimal sumAmountByWalletAndTypes(@Param("walletId") Long walletId, 
                                                    @Param("types") List<Transaction.Type> types);
+    
+    Optional<Transaction> findByReference(String reference);
+    
+    Optional<Transaction> findByFlutterwaveTxRef(String flutterwaveTxRef);
+    
+    Optional<Transaction> findByFlutterwaveFlwRef(String flutterwaveFlwRef);
+    
+    Optional<Transaction> findByFlutterwaveTransferId(String flutterwaveTransferId);
 }
