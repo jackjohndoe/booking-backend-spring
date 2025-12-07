@@ -11,6 +11,7 @@ import com.example.booking.entity.Wallet;
 import com.example.booking.exception.BadRequestException;
 import com.example.booking.exception.ResourceNotFoundException;
 import com.example.booking.payment.PaymentProvider;
+import com.example.booking.payment.FlutterwaveService;
 import com.example.booking.payment.dto.PaymentIntentRequest;
 import com.example.booking.payment.dto.PaymentIntentResponse;
 import com.example.booking.payment.dto.PayoutRequest;
@@ -20,11 +21,13 @@ import com.example.booking.repository.WalletRepository;
 import com.example.booking.service.WalletService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
+@Slf4j
 @Service
 @Transactional
 public class WalletServiceImpl implements WalletService {
@@ -33,15 +36,18 @@ public class WalletServiceImpl implements WalletService {
     private final TransactionRepository transactionRepository;
     private final BookingRepository bookingRepository;
     private final PaymentProvider paymentProvider;
+    private final FlutterwaveService flutterwaveService;
 
     public WalletServiceImpl(WalletRepository walletRepository,
                              TransactionRepository transactionRepository,
                              BookingRepository bookingRepository,
-                             PaymentProvider paymentProvider) {
+                             PaymentProvider paymentProvider,
+                             FlutterwaveService flutterwaveService) {
         this.walletRepository = walletRepository;
         this.transactionRepository = transactionRepository;
         this.bookingRepository = bookingRepository;
         this.paymentProvider = paymentProvider;
+        this.flutterwaveService = flutterwaveService;
     }
 
     @Override
@@ -51,11 +57,26 @@ public class WalletServiceImpl implements WalletService {
                     Wallet newWallet = Wallet.builder()
                             .user(user)
                             .balance(BigDecimal.ZERO)
-                            .currency("USD")
+                            .currency("NGN")
                             .status(Wallet.Status.ACTIVE)
                             .build();
                     return walletRepository.save(newWallet);
                 });
+        
+        // Sync balance if it hasn't been synced recently (within last 30 seconds)
+        // This ensures balance is accurate without syncing on every request
+        if (wallet.getLastSyncedAt() == null || 
+            wallet.getLastSyncedAt().isBefore(java.time.OffsetDateTime.now().minusSeconds(30))) {
+            try {
+                syncBalanceWithFlutterwave(user);
+                // Refresh wallet after sync
+                wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
+            } catch (Exception e) {
+                log.warn("Failed to sync balance when retrieving wallet for user {}: {}", user.getId(), e.getMessage());
+                // Continue with existing balance if sync fails
+            }
+        }
+        
         return toResponse(wallet);
     }
 
@@ -70,51 +91,58 @@ public class WalletServiceImpl implements WalletService {
 
     @Override
     public TransactionResponse deposit(DepositRequest request, User user) {
+        // For Flutterwave integration, deposits are processed via webhook
+        // This method creates a pending transaction that will be confirmed by webhook
         Wallet wallet = walletRepository.findByUserIdWithLock(user.getId())
                 .orElseGet(() -> {
                     Wallet newWallet = Wallet.builder()
                             .user(user)
                             .balance(BigDecimal.ZERO)
-                            .currency("USD")
+                            .currency("NGN")
                             .status(Wallet.Status.ACTIVE)
                             .build();
                     return walletRepository.save(newWallet);
                 });
 
-        PaymentIntentRequest paymentRequest = PaymentIntentRequest.builder()
-                .amount(request.getAmount())
-                .currency(wallet.getCurrency())
-                .customerId(user.getId().toString())
-                .description(request.getDescription() != null ? request.getDescription() : "Wallet deposit")
-                .captureImmediately(true)
-                .build();
-
-        PaymentIntentResponse paymentResponse = paymentProvider.createPaymentIntent(paymentRequest);
-        PaymentIntentResponse confirmed = paymentProvider.confirmPaymentIntent(paymentResponse.getPaymentIntentId());
-
-        if (!"succeeded".equals(confirmed.getStatus())) {
-            String reason = confirmed.getFailureReason() != null ? confirmed.getFailureReason() : "Unknown error";
-            throw new BadRequestException("Payment processing failed: " + reason + 
-                    ". Please check your payment method and try again, or contact support if the issue persists.");
-        }
-
+        // Create pending transaction - will be confirmed when Flutterwave webhook arrives
+        String reference = request.getReference() != null ? request.getReference() : 
+                "DEP_" + System.currentTimeMillis() + "_" + user.getId();
+        
         Transaction transaction = Transaction.builder()
                 .wallet(wallet)
                 .user(user)
                 .type(Transaction.Type.DEPOSIT)
-                .status(Transaction.Status.COMPLETED)
+                .status(Transaction.Status.PENDING) // Will be updated by webhook
                 .amount(request.getAmount())
-                .currency(wallet.getCurrency())
-                .description(request.getDescription())
-                .externalPaymentId(confirmed.getPaymentIntentId())
-                .reference("DEP_" + System.currentTimeMillis())
+                .currency("NGN")
+                .description(request.getDescription() != null ? request.getDescription() : "Wallet deposit")
+                .reference(reference)
+                .flutterwaveTxRef(request.getReference()) // Store Flutterwave tx_ref
                 .build();
 
-        transaction.setProcessedAt(java.time.OffsetDateTime.now());
         Transaction saved = transactionRepository.save(transaction);
-
-        wallet.setBalance(wallet.getBalance().add(request.getAmount()));
-        walletRepository.save(wallet);
+        
+        // If Flutterwave reference is provided, try to verify immediately
+        if (request.getReference() != null && !request.getReference().isEmpty()) {
+            try {
+                FlutterwaveService.TransactionVerification verification = 
+                        flutterwaveService.verifyTransaction(request.getReference());
+                if ("successful".equalsIgnoreCase(verification.getStatus())) {
+                    // Payment already confirmed, update transaction
+                    saved.setStatus(Transaction.Status.COMPLETED);
+                    saved.setFlutterwaveFlwRef(verification.getFlwRef());
+                    saved.setFlutterwaveStatus(verification.getStatus());
+                    saved.setProcessedAt(java.time.OffsetDateTime.now());
+                    wallet.setBalance(wallet.getBalance().add(request.getAmount()));
+                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+                    transactionRepository.save(saved);
+                    walletRepository.save(wallet);
+                }
+            } catch (Exception e) {
+                // Verification failed, transaction remains pending - webhook will update it
+                log.warn("Could not verify Flutterwave transaction immediately: {}", e.getMessage());
+            }
+        }
 
         return toTransactionResponse(saved);
     }
@@ -131,36 +159,68 @@ public class WalletServiceImpl implements WalletService {
                     request.getAmount() + " " + wallet.getCurrency() + ". Please deposit funds or adjust the withdrawal amount.");
         }
 
-        PayoutRequest payoutRequest = PayoutRequest.builder()
-                .amount(request.getAmount())
-                .currency(wallet.getCurrency())
-                .destinationAccountId(request.getDestinationAccountId())
-                .description(request.getDescription() != null ? request.getDescription() : "Wallet withdrawal")
-                .build();
+        // Use Flutterwave Transfer API to send money to user's bank account
+        String reference = "WTH_" + System.currentTimeMillis() + "_" + user.getId();
+        String accountBank = request.getAccountBank() != null ? request.getAccountBank() : 
+                extractBankCode(request.getDestinationAccountId());
+        String accountNumber = request.getAccountNumber() != null ? request.getAccountNumber() : 
+                extractAccountNumber(request.getDestinationAccountId());
+        String beneficiaryName = request.getBeneficiaryName() != null ? request.getBeneficiaryName() : 
+                user.getName();
 
-        var payoutResponse = paymentProvider.createPayout(payoutRequest);
+        try {
+            FlutterwaveService.TransferResponse transferResponse = flutterwaveService.transferFunds(
+                    accountBank,
+                    accountNumber,
+                    request.getAmount(),
+                    request.getDescription() != null ? request.getDescription() : "Wallet withdrawal",
+                    reference,
+                    beneficiaryName
+            );
 
-        Transaction transaction = Transaction.builder()
-                .wallet(wallet)
-                .user(user)
-                .type(Transaction.Type.WITHDRAWAL)
-                .status("pending".equals(payoutResponse.getStatus()) ? Transaction.Status.PROCESSING : Transaction.Status.COMPLETED)
-                .amount(request.getAmount())
-                .currency(wallet.getCurrency())
-                .description(request.getDescription())
-                .externalPayoutId(payoutResponse.getPayoutId())
-                .reference("WTH_" + System.currentTimeMillis())
-                .build();
+            // Create transaction with processing status - will be confirmed by webhook
+            Transaction transaction = Transaction.builder()
+                    .wallet(wallet)
+                    .user(user)
+                    .type(Transaction.Type.WITHDRAWAL)
+                    .status(Transaction.Status.PROCESSING) // Will be updated by webhook
+                    .amount(request.getAmount())
+                    .currency("NGN")
+                    .description(request.getDescription())
+                    .flutterwaveTransferId(transferResponse.getTransferId())
+                    .flutterwaveStatus(transferResponse.getStatus())
+                    .reference(reference)
+                    .build();
 
-        if (Transaction.Status.COMPLETED.equals(transaction.getStatus())) {
-            transaction.setProcessedAt(java.time.OffsetDateTime.now());
+            // Deduct from wallet immediately (Flutterwave will process the transfer)
             wallet.setBalance(wallet.getBalance().subtract(request.getAmount()));
+            wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+
+            Transaction saved = transactionRepository.save(transaction);
+            walletRepository.save(wallet);
+
+            return toTransactionResponse(saved);
+        } catch (Exception e) {
+            log.error("Flutterwave transfer failed for withdrawal", e);
+            throw new BadRequestException("Withdrawal failed: " + e.getMessage() + 
+                    ". Please check your bank account details and try again.");
         }
+    }
 
-        Transaction saved = transactionRepository.save(transaction);
-        walletRepository.save(wallet);
+    private String extractBankCode(String destinationAccountId) {
+        // Extract bank code from destination account ID if in format "BANK_CODE:ACCOUNT_NUMBER"
+        if (destinationAccountId != null && destinationAccountId.contains(":")) {
+            return destinationAccountId.split(":")[0];
+        }
+        return null;
+    }
 
-        return toTransactionResponse(saved);
+    private String extractAccountNumber(String destinationAccountId) {
+        // Extract account number from destination account ID if in format "BANK_CODE:ACCOUNT_NUMBER"
+        if (destinationAccountId != null && destinationAccountId.contains(":")) {
+            return destinationAccountId.split(":")[1];
+        }
+        return destinationAccountId;
     }
 
     @Override
@@ -200,7 +260,7 @@ public class WalletServiceImpl implements WalletService {
                 .type(Transaction.Type.ESCROW_HOLD)
                 .status(Transaction.Status.COMPLETED)
                 .amount(amount)
-                .currency(isWalletPayment ? wallet.getCurrency() : "USD")
+                .currency(isWalletPayment ? wallet.getCurrency() : "NGN")
                 .description("Escrow hold for booking #" + bookingId)
                 .reference("ESC_HOLD_" + bookingId)
                 .build();
@@ -224,7 +284,7 @@ public class WalletServiceImpl implements WalletService {
                     Wallet newWallet = Wallet.builder()
                             .user(host)
                             .balance(BigDecimal.ZERO)
-                            .currency("USD")
+                            .currency("NGN")
                             .status(Wallet.Status.ACTIVE)
                             .build();
                     return walletRepository.save(newWallet);
@@ -289,7 +349,7 @@ public class WalletServiceImpl implements WalletService {
                         Wallet newWallet = Wallet.builder()
                                 .user(booking.getUser())
                                 .balance(BigDecimal.ZERO)
-                                .currency("USD")
+                                .currency("NGN")
                                 .status(Wallet.Status.ACTIVE)
                                 .build();
                         return walletRepository.save(newWallet);
@@ -321,6 +381,146 @@ public class WalletServiceImpl implements WalletService {
     @Override
     public TransactionResponse requestPayout(WithdrawalRequest request, User user) {
         return withdraw(request, user);
+    }
+
+    @Override
+    public void processFlutterwaveWebhook(String event, String txRef, String flwRef, BigDecimal amount, String status) {
+        log.info("Processing Flutterwave webhook: event={}, txRef={}, flwRef={}, amount={}, status={}", 
+                event, txRef, flwRef, amount, status);
+
+        try {
+            // Find transaction by Flutterwave reference
+            Transaction transaction = transactionRepository.findByFlutterwaveTxRef(txRef)
+                    .orElseGet(() -> transactionRepository.findByFlutterwaveFlwRef(flwRef).orElse(null));
+
+            if (transaction == null) {
+                log.warn("No transaction found for Flutterwave reference: txRef={}, flwRef={}. " +
+                        "This may be a new payment that hasn't been recorded yet.", txRef, flwRef);
+                return;
+            }
+
+            Wallet wallet = transaction.getWallet();
+            if (wallet == null) {
+                log.error("Transaction {} has no associated wallet", transaction.getId());
+                return;
+            }
+
+            boolean isSuccessful = "successful".equalsIgnoreCase(status) || 
+                                  "SUCCESSFUL".equalsIgnoreCase(status) ||
+                                  "completed".equalsIgnoreCase(status) ||
+                                  "COMPLETED".equalsIgnoreCase(status);
+
+            if ("charge.completed".equals(event)) {
+                // Deposit completed - credit wallet
+                if (isSuccessful && (transaction.getStatus() == Transaction.Status.PENDING || 
+                                     transaction.getStatus() == Transaction.Status.PROCESSING)) {
+                    BigDecimal oldBalance = wallet.getBalance();
+                    transaction.setStatus(Transaction.Status.COMPLETED);
+                    transaction.setFlutterwaveFlwRef(flwRef);
+                    transaction.setFlutterwaveStatus(status);
+                    transaction.setProcessedAt(java.time.OffsetDateTime.now());
+                    wallet.setBalance(wallet.getBalance().add(amount));
+                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+                    transactionRepository.save(transaction);
+                    walletRepository.save(wallet);
+                    log.info("Wallet credited via webhook: userId={}, amount={}, oldBalance={}, newBalance={}", 
+                            wallet.getUser().getId(), amount, oldBalance, wallet.getBalance());
+                } else if (!isSuccessful) {
+                    transaction.setStatus(Transaction.Status.FAILED);
+                    transaction.setFlutterwaveStatus(status);
+                    transaction.setProcessedAt(java.time.OffsetDateTime.now());
+                    transactionRepository.save(transaction);
+                    log.warn("Deposit failed via webhook: txRef={}, status={}", txRef, status);
+                } else {
+                    log.info("Transaction {} already processed with status {}", transaction.getId(), transaction.getStatus());
+                }
+            } else if ("transfer.completed".equals(event)) {
+                // Transfer completed - already deducted, just update status
+                if (isSuccessful && (transaction.getStatus() == Transaction.Status.PROCESSING ||
+                                    transaction.getStatus() == Transaction.Status.PENDING)) {
+                    transaction.setStatus(Transaction.Status.COMPLETED);
+                    transaction.setFlutterwaveTransferId(flwRef);
+                    transaction.setFlutterwaveStatus(status);
+                    transaction.setProcessedAt(java.time.OffsetDateTime.now());
+                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+                    transactionRepository.save(transaction);
+                    walletRepository.save(wallet);
+                    log.info("Withdrawal completed via webhook: userId={}, amount={}, newBalance={}", 
+                            wallet.getUser().getId(), amount, wallet.getBalance());
+                } else if (!isSuccessful) {
+                    // Transfer failed - refund wallet
+                    BigDecimal oldBalance = wallet.getBalance();
+                    transaction.setStatus(Transaction.Status.FAILED);
+                    transaction.setFlutterwaveStatus(status);
+                    transaction.setProcessedAt(java.time.OffsetDateTime.now());
+                    wallet.setBalance(wallet.getBalance().add(amount)); // Refund
+                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+                    transactionRepository.save(transaction);
+                    walletRepository.save(wallet);
+                    log.warn("Withdrawal failed via webhook, refunded: txRef={}, status={}, oldBalance={}, newBalance={}", 
+                            txRef, status, oldBalance, wallet.getBalance());
+                } else {
+                    log.info("Transaction {} already processed with status {}", transaction.getId(), transaction.getStatus());
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error processing Flutterwave webhook: event={}, txRef={}, flwRef={}", 
+                    event, txRef, flwRef, e);
+            throw e; // Re-throw to be handled by controller
+        }
+    }
+
+    @Override
+    public void syncBalanceWithFlutterwave(User user) {
+        try {
+            Wallet wallet = walletRepository.findByUserId(user.getId()).orElse(null);
+            if (wallet == null) {
+                log.warn("No wallet found for user {}", user.getId());
+                return;
+            }
+
+            // Recalculate balance from completed transactions
+            // Handle null values from sum queries
+            BigDecimal deposits = transactionRepository.sumAmountByWalletAndTypes(
+                    wallet.getId(),
+                    java.util.Arrays.asList(
+                            Transaction.Type.DEPOSIT,
+                            Transaction.Type.ESCROW_RELEASE,
+                            Transaction.Type.BOOKING_REFUND
+                    )
+            );
+            if (deposits == null) {
+                deposits = BigDecimal.ZERO;
+            }
+
+            BigDecimal withdrawals = transactionRepository.sumAmountByWalletAndTypes(
+                    wallet.getId(),
+                    java.util.Arrays.asList(
+                            Transaction.Type.WITHDRAWAL,
+                            Transaction.Type.ESCROW_HOLD,
+                            Transaction.Type.BOOKING_PAYMENT
+                    )
+            );
+            if (withdrawals == null) {
+                withdrawals = BigDecimal.ZERO;
+            }
+
+            BigDecimal calculatedBalance = deposits.subtract(withdrawals);
+            
+            // Ensure balance is not negative (shouldn't happen, but safety check)
+            if (calculatedBalance.compareTo(BigDecimal.ZERO) < 0) {
+                log.warn("Calculated balance is negative for user {}: {}. Setting to 0.", user.getId(), calculatedBalance);
+                calculatedBalance = BigDecimal.ZERO;
+            }
+
+            wallet.setBalance(calculatedBalance);
+            wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+            walletRepository.save(wallet);
+            log.info("Balance synced for user {}: newBalance={}", user.getId(), calculatedBalance);
+        } catch (Exception e) {
+            log.error("Error syncing balance for user {}: {}", user.getId(), e.getMessage(), e);
+            throw new RuntimeException("Failed to sync wallet balance: " + e.getMessage(), e);
+        }
     }
 
     private WalletResponse toResponse(Wallet wallet) {

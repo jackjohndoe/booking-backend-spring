@@ -21,7 +21,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import lombok.extern.slf4j.Slf4j;
+import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/wallet")
 @Tag(name = "Wallet", description = "Wallet and transaction management endpoints")
@@ -79,5 +82,28 @@ public class WalletController {
             @Parameter(description = "Page size") @RequestParam(name = "size", defaultValue = "20") int size) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(PageResponse.from(walletService.getTransactions(userDetails.getUser(), pageable)));
+    }
+
+    @Operation(summary = "Sync wallet balance with Flutterwave", 
+            description = "Manually syncs wallet balance by recalculating from transactions")
+    @ApiResponse(responseCode = "200", description = "Balance synced successfully")
+    @ApiResponse(responseCode = "500", description = "Error syncing balance")
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/sync")
+    public ResponseEntity<?> syncBalance(
+            @AuthenticationPrincipal BookingUserDetails userDetails) {
+        try {
+            walletService.syncBalanceWithFlutterwave(userDetails.getUser());
+            return ResponseEntity.ok(Map.of(
+                "status", "success",
+                "message", "Wallet balance synced successfully"
+            ));
+        } catch (Exception e) {
+            log.error("Error syncing balance for user {}: {}", userDetails.getUser().getId(), e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "status", "error",
+                "message", "Failed to sync wallet balance: " + e.getMessage()
+            ));
+        }
     }
 }
