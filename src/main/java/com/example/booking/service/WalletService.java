@@ -22,4 +22,6 @@ public interface WalletService {
     TransactionResponse requestPayout(WithdrawalRequest request, User user);
     void processFlutterwaveWebhook(String event, String txRef, String flwRef, BigDecimal amount, String status);
     void syncBalanceWithFlutterwave(User user);
+    TransactionResponse verifyAndProcessTransaction(String txRef, User user);
+    void syncAllTransactionsFromFlutterwave(User user);
 }

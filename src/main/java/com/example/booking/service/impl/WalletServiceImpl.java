@@ -523,6 +523,140 @@ public class WalletServiceImpl implements WalletService {
         }
     }
 
+    @Override
+    public TransactionResponse verifyAndProcessTransaction(String txRef, User user) {
+        try {
+            log.info("Verifying and processing transaction: txRef={}, userId={}", txRef, user.getId());
+            
+            // Check if transaction already exists
+            Transaction existingTransaction = transactionRepository.findByFlutterwaveTxRef(txRef).orElse(null);
+            
+            // Verify transaction with Flutterwave
+            FlutterwaveService.TransactionVerification verification = flutterwaveService.verifyTransaction(txRef);
+            
+            if (verification == null || verification.getStatus() == null) {
+                throw new RuntimeException("Transaction verification failed: No response from Flutterwave");
+            }
+            
+            boolean isSuccessful = "successful".equalsIgnoreCase(verification.getStatus()) || 
+                                  "SUCCESSFUL".equalsIgnoreCase(verification.getStatus()) ||
+                                  "completed".equalsIgnoreCase(verification.getStatus()) ||
+                                  "COMPLETED".equalsIgnoreCase(verification.getStatus());
+            
+            if (!isSuccessful) {
+                log.warn("Transaction {} is not successful. Status: {}", txRef, verification.getStatus());
+                if (existingTransaction != null) {
+                    existingTransaction.setStatus(Transaction.Status.FAILED);
+                    existingTransaction.setFlutterwaveStatus(verification.getStatus());
+                    transactionRepository.save(existingTransaction);
+                    return toTransactionResponse(existingTransaction);
+                }
+                throw new RuntimeException("Transaction is not successful. Status: " + verification.getStatus());
+            }
+            
+            // Get or create wallet
+            Wallet wallet = walletRepository.findByUserIdWithLock(user.getId())
+                    .orElseGet(() -> {
+                        Wallet newWallet = Wallet.builder()
+                                .user(user)
+                                .balance(BigDecimal.ZERO)
+                                .currency("NGN")
+                                .status(Wallet.Status.ACTIVE)
+                                .build();
+                        return walletRepository.save(newWallet);
+                    });
+            
+            BigDecimal amount = verification.getAmount() != null ? verification.getAmount() : BigDecimal.ZERO;
+            
+            if (existingTransaction != null) {
+                // Update existing transaction
+                if (existingTransaction.getStatus() != Transaction.Status.COMPLETED) {
+                    BigDecimal oldBalance = wallet.getBalance();
+                    existingTransaction.setStatus(Transaction.Status.COMPLETED);
+                    existingTransaction.setFlutterwaveFlwRef(verification.getFlwRef());
+                    existingTransaction.setFlutterwaveStatus(verification.getStatus());
+                    existingTransaction.setProcessedAt(java.time.OffsetDateTime.now());
+                    wallet.setBalance(wallet.getBalance().add(amount));
+                    wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+                    transactionRepository.save(existingTransaction);
+                    walletRepository.save(wallet);
+                    log.info("Transaction updated and wallet credited: userId={}, amount={}, oldBalance={}, newBalance={}", 
+                            user.getId(), amount, oldBalance, wallet.getBalance());
+                } else {
+                    log.info("Transaction {} already completed", txRef);
+                }
+                return toTransactionResponse(existingTransaction);
+            } else {
+                // Create new transaction
+                Transaction newTransaction = Transaction.builder()
+                        .wallet(wallet)
+                        .user(user)
+                        .type(Transaction.Type.DEPOSIT)
+                        .status(Transaction.Status.COMPLETED)
+                        .amount(amount)
+                        .currency(verification.getCurrency() != null ? verification.getCurrency() : "NGN")
+                        .description("Wallet deposit via Flutterwave")
+                        .reference(txRef)
+                        .flutterwaveTxRef(txRef)
+                        .flutterwaveFlwRef(verification.getFlwRef())
+                        .flutterwaveStatus(verification.getStatus())
+                        .processedAt(java.time.OffsetDateTime.now())
+                        .build();
+                
+                BigDecimal oldBalance = wallet.getBalance();
+                wallet.setBalance(wallet.getBalance().add(amount));
+                wallet.setLastSyncedAt(java.time.OffsetDateTime.now());
+                Transaction saved = transactionRepository.save(newTransaction);
+                walletRepository.save(wallet);
+                log.info("New transaction created and wallet credited: userId={}, amount={}, oldBalance={}, newBalance={}", 
+                        user.getId(), amount, oldBalance, wallet.getBalance());
+                return toTransactionResponse(saved);
+            }
+        } catch (Exception e) {
+            log.error("Error verifying and processing transaction {} for user {}: {}", txRef, user.getId(), e.getMessage(), e);
+            throw new RuntimeException("Failed to verify and process transaction: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void syncAllTransactionsFromFlutterwave(User user) {
+        try {
+            log.info("Syncing all transactions from Flutterwave for user {}", user.getId());
+            
+            // First, sync balance from existing transactions
+            syncBalanceWithFlutterwave(user);
+            
+            // Get all pending transactions for this user
+            Wallet wallet = walletRepository.findByUserId(user.getId()).orElse(null);
+            java.util.List<Transaction> pendingTransactions = java.util.Collections.emptyList();
+            if (wallet != null) {
+                pendingTransactions = transactionRepository.findByWalletIdAndStatus(wallet.getId(), Transaction.Status.PENDING);
+            }
+            
+            log.info("Found {} pending transactions for user {}", pendingTransactions.size(), user.getId());
+            
+            // Verify each pending transaction
+            for (Transaction transaction : pendingTransactions) {
+                if (transaction.getFlutterwaveTxRef() != null && !transaction.getFlutterwaveTxRef().isEmpty()) {
+                    try {
+                        log.info("Verifying pending transaction: txRef={}", transaction.getFlutterwaveTxRef());
+                        verifyAndProcessTransaction(transaction.getFlutterwaveTxRef(), user);
+                    } catch (Exception e) {
+                        log.warn("Failed to verify transaction {}: {}", transaction.getFlutterwaveTxRef(), e.getMessage());
+                        // Continue with other transactions
+                    }
+                }
+            }
+            
+            // Final sync to ensure balance is correct
+            syncBalanceWithFlutterwave(user);
+            log.info("Completed syncing all transactions for user {}", user.getId());
+        } catch (Exception e) {
+            log.error("Error syncing all transactions for user {}: {}", user.getId(), e.getMessage(), e);
+            throw new RuntimeException("Failed to sync all transactions: " + e.getMessage(), e);
+        }
+    }
+
     private WalletResponse toResponse(Wallet wallet) {
         return WalletResponse.builder()
                 .id(wallet.getId())
