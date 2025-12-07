@@ -699,7 +699,7 @@ public class WalletServiceImpl implements WalletService {
         try {
             log.info("Syncing all transactions from Flutterwave for user {}", user.getId());
             
-            // Get or create wallet entity
+            // Get or create wallet entity (fetching directly from repository)
             Wallet wallet = walletRepository.findByUserId(user.getId()).orElse(null);
             if (wallet == null) {
                 // Create wallet if it doesn't exist
