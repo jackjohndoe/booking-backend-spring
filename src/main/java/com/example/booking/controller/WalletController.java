@@ -162,4 +162,66 @@ public class WalletController {
             ));
         }
     }
+
+    @Operation(summary = "Verify and process multiple transactions", 
+            description = "Verifies multiple transaction references with Flutterwave and adds them to wallet history")
+    @ApiResponse(responseCode = "200", description = "Transactions processed successfully")
+    @ApiResponse(responseCode = "400", description = "Invalid request")
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/verify-transactions")
+    public ResponseEntity<?> verifyMultipleTransactions(
+            @RequestBody Map<String, Object> request,
+            @AuthenticationPrincipal BookingUserDetails userDetails) {
+        try {
+            @SuppressWarnings("unchecked")
+            java.util.List<String> txRefs = (java.util.List<String>) request.get("txRefs");
+            
+            if (txRefs == null || txRefs.isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "Transaction references (txRefs) array is required"
+                ));
+            }
+            
+            java.util.List<TransactionResponse> processedTransactions = new java.util.ArrayList<>();
+            java.util.List<String> errors = new java.util.ArrayList<>();
+            
+            for (String txRef : txRefs) {
+                if (txRef == null || txRef.trim().isEmpty()) {
+                    continue;
+                }
+                try {
+                    TransactionResponse transaction = walletService.verifyAndProcessTransaction(txRef.trim(), userDetails.getUser());
+                    processedTransactions.add(transaction);
+                    log.info("Successfully processed transaction: {}", txRef);
+                } catch (Exception e) {
+                    String errorMsg = "Failed to process transaction " + txRef + ": " + e.getMessage();
+                    errors.add(errorMsg);
+                    log.error("Error processing transaction {}: {}", txRef, e.getMessage());
+                }
+            }
+            
+            // Sync balance after processing all transactions
+            try {
+                walletService.syncBalanceWithFlutterwave(userDetails.getUser());
+            } catch (Exception e) {
+                log.warn("Failed to sync balance after processing transactions: {}", e.getMessage());
+            }
+            
+            return ResponseEntity.ok(Map.of(
+                "status", "success",
+                "message", String.format("Processed %d transaction(s), %d error(s)", processedTransactions.size(), errors.size()),
+                "processed", processedTransactions.size(),
+                "errors", errors.size(),
+                "transactions", processedTransactions,
+                "errorDetails", errors
+            ));
+        } catch (Exception e) {
+            log.error("Error verifying multiple transactions for user {}: {}", userDetails.getUser().getId(), e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "status", "error",
+                "message", "Failed to verify transactions: " + e.getMessage()
+            ));
+        }
+    }
 }
