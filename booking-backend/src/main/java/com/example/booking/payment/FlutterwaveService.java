@@ -623,8 +623,6 @@ public class FlutterwaveService {
         private String createdAt;
     }
 
-    @lombok.Builder
-    @Data
     public static class TransferResponse {
         private String transferId;
         private String reference;
@@ -639,6 +637,54 @@ public class FlutterwaveService {
 
         public String getTransferId() {
             return transferId;
+        }
+
+        // Builder pattern methods (replacing @lombok.Builder)
+        public static TransferResponseBuilder builder() {
+            return new TransferResponseBuilder();
+        }
+
+        public static class TransferResponseBuilder {
+            private String transferId;
+            private String reference;
+            private String status;
+            private BigDecimal amount;
+            private String message;
+
+            public TransferResponseBuilder transferId(String transferId) {
+                this.transferId = transferId;
+                return this;
+            }
+
+            public TransferResponseBuilder reference(String reference) {
+                this.reference = reference;
+                return this;
+            }
+
+            public TransferResponseBuilder status(String status) {
+                this.status = status;
+                return this;
+            }
+
+            public TransferResponseBuilder amount(BigDecimal amount) {
+                this.amount = amount;
+                return this;
+            }
+
+            public TransferResponseBuilder message(String message) {
+                this.message = message;
+                return this;
+            }
+
+            public TransferResponse build() {
+                TransferResponse response = new TransferResponse();
+                response.transferId = this.transferId;
+                response.reference = this.reference;
+                response.status = this.status;
+                response.amount = this.amount;
+                response.message = this.message;
+                return response;
+            }
         }
     }
 
@@ -665,8 +711,6 @@ public class FlutterwaveService {
         private Map<String, Object> customer;
     }
 
-    @lombok.Builder
-    @Data
     public static class TransactionVerification {
         private String txRef;
         private String flwRef;
@@ -682,6 +726,61 @@ public class FlutterwaveService {
 
         public String getFlwRef() {
             return flwRef;
+        }
+
+        // Builder pattern methods (replacing @lombok.Builder)
+        public static TransactionVerificationBuilder builder() {
+            return new TransactionVerificationBuilder();
+        }
+
+        public static class TransactionVerificationBuilder {
+            private String txRef;
+            private String flwRef;
+            private String status;
+            private BigDecimal amount;
+            private String currency;
+            private String message;
+
+            public TransactionVerificationBuilder txRef(String txRef) {
+                this.txRef = txRef;
+                return this;
+            }
+
+            public TransactionVerificationBuilder flwRef(String flwRef) {
+                this.flwRef = flwRef;
+                return this;
+            }
+
+            public TransactionVerificationBuilder status(String status) {
+                this.status = status;
+                return this;
+            }
+
+            public TransactionVerificationBuilder amount(BigDecimal amount) {
+                this.amount = amount;
+                return this;
+            }
+
+            public TransactionVerificationBuilder currency(String currency) {
+                this.currency = currency;
+                return this;
+            }
+
+            public TransactionVerificationBuilder message(String message) {
+                this.message = message;
+                return this;
+            }
+
+            public TransactionVerification build() {
+                TransactionVerification verification = new TransactionVerification();
+                verification.txRef = this.txRef;
+                verification.flwRef = this.flwRef;
+                verification.status = this.status;
+                verification.amount = this.amount;
+                verification.currency = this.currency;
+                verification.message = this.message;
+                return verification;
+            }
         }
     }
 }
