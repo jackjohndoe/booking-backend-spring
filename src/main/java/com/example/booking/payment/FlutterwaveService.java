@@ -164,9 +164,9 @@ public class FlutterwaveService {
                 log.info("Virtual account created successfully: accountNumber={}, bankName={}, txRef={}", 
                         data.getAccountNumber(), data.getBankName(), txRef);
                 
-                // Generate account name from customer name (Flutterwave may not return this)
-                String accountName = data.getAccountName() != null ? data.getAccountName() : 
-                    (name != null && !name.trim().isEmpty() ? name : "Nigerian Apartments Leasing Ltd");
+                // Always use company name for virtual accounts (not user's name)
+                // This ensures consistent branding and prevents confusion
+                String accountName = "Nigerian Apartments Leasing Ltd";
                 
                 return VirtualAccountResponse.builder()
                         .accountNumber(data.getAccountNumber())
