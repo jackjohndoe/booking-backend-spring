@@ -37,6 +37,7 @@ public class FlutterwaveService {
 
     private static final String FLUTTERWAVE_API_BASE_URL = "https://api.flutterwave.com/v3";
     private static final String VIRTUAL_ACCOUNT_URL = FLUTTERWAVE_API_BASE_URL + "/virtual-account-numbers";
+    private static final String TRANSFER_URL = FLUTTERWAVE_API_BASE_URL + "/transfers";
     private static final String WEBHOOK_SECRET_HASH_HEADER = "verif-hash"; // Flutterwave webhook verification header
     private static final int CONNECT_TIMEOUT_MS = 10000; // 10 seconds
     private static final int READ_TIMEOUT_MS = 30000; // 30 seconds
@@ -274,7 +275,7 @@ public class FlutterwaveService {
             }
             
             if ("charge.completed".equals(event)) {
-                // Payment was completed
+                // Payment was completed (deposit to wallet)
                 String txRef = (String) data.get("tx_ref");
                 String status = (String) data.get("status");
                 String flwRef = (String) data.get("flw_ref");
@@ -291,6 +292,28 @@ public class FlutterwaveService {
                         .amount(amount)
                         .status(status)
                         .message("Payment processed successfully")
+                        .build();
+            }
+            
+            if ("transfer.completed".equals(event)) {
+                // Transfer was completed (withdrawal or payment)
+                String transferId = (String) data.get("id");
+                String status = (String) data.get("status");
+                String reference = (String) data.get("reference");
+                Object amountObj = data.get("amount");
+                BigDecimal amount = amountObj != null ? 
+                    new BigDecimal(amountObj.toString()).divide(new BigDecimal("100")) : null;
+                
+                log.info("Transfer completed via webhook: transferId={}, reference={}, status={}, amount={}", 
+                        transferId, reference, status, amount);
+                
+                return WebhookResult.builder()
+                        .success("SUCCESSFUL".equalsIgnoreCase(status))
+                        .txRef(reference)
+                        .flwRef(transferId)
+                        .amount(amount)
+                        .status(status)
+                        .message("Transfer processed successfully")
                         .build();
             }
             
@@ -367,6 +390,198 @@ public class FlutterwaveService {
         private String flwRef; // Flutterwave reference for transaction matching
     }
 
+    /**
+     * Transfer funds to a bank account using Flutterwave Transfer API.
+     * 
+     * @param accountBank Bank code (e.g., "044" for Access Bank)
+     * @param accountNumber Bank account number
+     * @param amount Amount to transfer (in NGN)
+     * @param narration Transfer description/narration
+     * @param reference Unique reference for this transfer
+     * @param beneficiaryName Name of the account holder
+     * @return TransferResponse with transfer details
+     */
+    public TransferResponse transferFunds(String accountBank, String accountNumber, 
+                                         BigDecimal amount, String narration, 
+                                         String reference, String beneficiaryName) {
+        log.debug("Initiating Flutterwave transfer: accountBank={}, accountNumber={}, amount={}, reference={}", 
+                accountBank, accountNumber, amount, reference);
+        
+        if (secretKey == null || secretKey.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "Flutterwave secret key is not configured. Please set FLUTTERWAVE_SECRET_KEY environment variable."
+            );
+        }
+        
+        try {
+            Map<String, Object> params = new HashMap<>();
+            params.put("account_bank", accountBank);
+            params.put("account_number", accountNumber);
+            params.put("amount", amount.multiply(new BigDecimal("100")).intValue()); // Amount in kobo
+            params.put("currency", "NGN");
+            params.put("narration", narration != null ? narration : "Wallet withdrawal");
+            params.put("reference", reference);
+            params.put("beneficiary_name", beneficiaryName != null ? beneficiaryName : "Customer");
+            
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(params, createAuthenticatedHeaders());
+            ResponseEntity<FlutterwaveTransferResponse> response = restTemplate.exchange(
+                    TRANSFER_URL,
+                    HttpMethod.POST,
+                    entity,
+                    FlutterwaveTransferResponse.class
+            );
+
+            FlutterwaveTransferResponse flutterwaveResponse = response.getBody();
+            if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
+                    && flutterwaveResponse.getData() != null) {
+                TransferData transferData = flutterwaveResponse.getData();
+                log.info("Transfer initiated successfully: transferId={}, reference={}, status={}", 
+                        transferData.getId(), reference, transferData.getStatus());
+                
+                return TransferResponse.builder()
+                        .transferId(transferData.getId())
+                        .reference(reference)
+                        .status(transferData.getStatus())
+                        .amount(amount)
+                        .message(flutterwaveResponse.getMessage())
+                        .build();
+            } else {
+                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error from Flutterwave";
+                log.error("Flutterwave transfer failed. Message: {}", errorMsg);
+                throw new RuntimeException(errorMsg);
+            }
+        } catch (HttpClientErrorException | HttpServerErrorException e) {
+            String responseBody = e.getResponseBodyAsString();
+            log.error("Flutterwave API error initiating transfer: HTTP {} - Response: {}", 
+                    e.getStatusCode().value(), responseBody);
+            throw new RuntimeException("Flutterwave transfer failed: " + 
+                    (responseBody != null && !responseBody.isEmpty() ? responseBody : e.getMessage()), e);
+        } catch (RestClientException e) {
+            log.error("Network error initiating transfer", e);
+            throw new RuntimeException("Network error connecting to Flutterwave: " + e.getMessage(), e);
+        } catch (Exception e) {
+            log.error("Unexpected error initiating transfer", e);
+            throw new RuntimeException("Unexpected error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Get transfer status from Flutterwave.
+     * 
+     * @param transferId Flutterwave transfer ID
+     * @return TransferResponse with current status
+     */
+    public TransferResponse getTransferStatus(String transferId) {
+        log.debug("Checking transfer status: transferId={}", transferId);
+        
+        if (secretKey == null || secretKey.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "Flutterwave secret key is not configured. Please set FLUTTERWAVE_SECRET_KEY environment variable."
+            );
+        }
+        
+        try {
+            HttpEntity<Void> entity = new HttpEntity<>(createAuthenticatedHeaders());
+            ResponseEntity<FlutterwaveTransferResponse> response = restTemplate.exchange(
+                    TRANSFER_URL + "/" + transferId,
+                    HttpMethod.GET,
+                    entity,
+                    FlutterwaveTransferResponse.class
+            );
+
+            FlutterwaveTransferResponse flutterwaveResponse = response.getBody();
+            if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
+                    && flutterwaveResponse.getData() != null) {
+                TransferData transferData = flutterwaveResponse.getData();
+                BigDecimal amount = transferData.getAmount() != null ? 
+                    new BigDecimal(transferData.getAmount()).divide(new BigDecimal("100")) : null;
+                
+                return TransferResponse.builder()
+                        .transferId(transferData.getId())
+                        .reference(transferData.getReference())
+                        .status(transferData.getStatus())
+                        .amount(amount)
+                        .message(flutterwaveResponse.getMessage())
+                        .build();
+            } else {
+                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error from Flutterwave";
+                log.error("Failed to get transfer status. Message: {}", errorMsg);
+                throw new RuntimeException(errorMsg);
+            }
+        } catch (HttpClientErrorException | HttpServerErrorException e) {
+            String responseBody = e.getResponseBodyAsString();
+            log.error("Flutterwave API error getting transfer status: HTTP {} - Response: {}", 
+                    e.getStatusCode().value(), responseBody);
+            throw new RuntimeException("Failed to get transfer status: " + 
+                    (responseBody != null && !responseBody.isEmpty() ? responseBody : e.getMessage()), e);
+        } catch (RestClientException e) {
+            log.error("Network error getting transfer status", e);
+            throw new RuntimeException("Network error connecting to Flutterwave: " + e.getMessage(), e);
+        } catch (Exception e) {
+            log.error("Unexpected error getting transfer status", e);
+            throw new RuntimeException("Unexpected error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Verify a transaction by Flutterwave reference.
+     * 
+     * @param txRef Transaction reference
+     * @return Transaction verification details
+     */
+    public TransactionVerification verifyTransaction(String txRef) {
+        log.debug("Verifying transaction: txRef={}", txRef);
+        
+        if (secretKey == null || secretKey.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "Flutterwave secret key is not configured. Please set FLUTTERWAVE_SECRET_KEY environment variable."
+            );
+        }
+        
+        try {
+            HttpEntity<Void> entity = new HttpEntity<>(createAuthenticatedHeaders());
+            ResponseEntity<FlutterwaveTransactionVerificationResponse> response = restTemplate.exchange(
+                    FLUTTERWAVE_API_BASE_URL + "/transactions/" + txRef + "/verify",
+                    HttpMethod.GET,
+                    entity,
+                    FlutterwaveTransactionVerificationResponse.class
+            );
+
+            FlutterwaveTransactionVerificationResponse flutterwaveResponse = response.getBody();
+            if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
+                    && flutterwaveResponse.getData() != null) {
+                TransactionVerificationData data = flutterwaveResponse.getData();
+                BigDecimal amount = data.getAmount() != null ? 
+                    new BigDecimal(data.getAmount()).divide(new BigDecimal("100")) : null;
+                
+                return TransactionVerification.builder()
+                        .txRef(data.getTxRef())
+                        .flwRef(data.getFlwRef())
+                        .status(data.getStatus())
+                        .amount(amount)
+                        .currency(data.getCurrency())
+                        .message(flutterwaveResponse.getMessage())
+                        .build();
+            } else {
+                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error from Flutterwave";
+                log.error("Transaction verification failed. Message: {}", errorMsg);
+                throw new RuntimeException(errorMsg);
+            }
+        } catch (HttpClientErrorException | HttpServerErrorException e) {
+            String responseBody = e.getResponseBodyAsString();
+            log.error("Flutterwave API error verifying transaction: HTTP {} - Response: {}", 
+                    e.getStatusCode().value(), responseBody);
+            throw new RuntimeException("Transaction verification failed: " + 
+                    (responseBody != null && !responseBody.isEmpty() ? responseBody : e.getMessage()), e);
+        } catch (RestClientException e) {
+            log.error("Network error verifying transaction", e);
+            throw new RuntimeException("Network error connecting to Flutterwave: " + e.getMessage(), e);
+        } catch (Exception e) {
+            log.error("Unexpected error verifying transaction", e);
+            throw new RuntimeException("Unexpected error: " + e.getMessage(), e);
+        }
+    }
+
     @lombok.Builder
     @Data
     public static class WebhookResult {
@@ -376,6 +591,98 @@ public class FlutterwaveService {
         private BigDecimal amount;
         private String status;
         private String message;
+    }
+
+    // Transfer API DTOs
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class FlutterwaveTransferResponse {
+        private String status;
+        private String message;
+        private TransferData data;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class TransferData {
+        private String id;
+        @JsonProperty("account_number")
+        private String accountNumber;
+        @JsonProperty("account_bank")
+        private String accountBank;
+        @JsonProperty("beneficiary_name")
+        private String beneficiaryName;
+        private Integer amount; // Amount in kobo
+        private String currency;
+        private String reference;
+        private String narration;
+        private String status;
+        @JsonProperty("complete_message")
+        private String completeMessage;
+        @JsonProperty("created_at")
+        private String createdAt;
+    }
+
+    @lombok.Builder
+    @Data
+    public static class TransferResponse {
+        private String transferId;
+        private String reference;
+        private String status;
+        private BigDecimal amount;
+        private String message;
+
+        // Manual getters (Lombok not working in Docker build)
+        public String getStatus() {
+            return status;
+        }
+
+        public String getTransferId() {
+            return transferId;
+        }
+    }
+
+    // Transaction Verification DTOs
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class FlutterwaveTransactionVerificationResponse {
+        private String status;
+        private String message;
+        private TransactionVerificationData data;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class TransactionVerificationData {
+        @JsonProperty("tx_ref")
+        private String txRef;
+        @JsonProperty("flw_ref")
+        private String flwRef;
+        private String status;
+        private Integer amount; // Amount in kobo
+        private String currency;
+        @JsonProperty("customer")
+        private Map<String, Object> customer;
+    }
+
+    @lombok.Builder
+    @Data
+    public static class TransactionVerification {
+        private String txRef;
+        private String flwRef;
+        private String status;
+        private BigDecimal amount;
+        private String currency;
+        private String message;
+
+        // Manual getters (Lombok not working in Docker build)
+        public String getStatus() {
+            return status;
+        }
+
+        public String getFlwRef() {
+            return flwRef;
+        }
     }
 }
 
