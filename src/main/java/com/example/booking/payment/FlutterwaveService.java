@@ -62,14 +62,66 @@ public class FlutterwaveService {
         String envEncryptionKey = System.getenv("FLUTTERWAVE_ENCRYPTION_KEY");
         
         // Use environment variable if property is empty, otherwise use property value
-        this.clientId = (clientId != null && !clientId.trim().isEmpty()) ? clientId : 
-                       (envClientId != null && !envClientId.trim().isEmpty() ? envClientId : null);
-        this.clientSecret = (clientSecret != null && !clientSecret.trim().isEmpty()) ? clientSecret : 
-                           (envClientSecret != null && !envClientSecret.trim().isEmpty() ? envClientSecret : null);
-        this.encryptionKey = (encryptionKey != null && !encryptionKey.trim().isEmpty()) ? encryptionKey : 
-                            (envEncryptionKey != null && !envEncryptionKey.trim().isEmpty() ? envEncryptionKey : null);
+        // Trim all values to remove any whitespace
+        String rawClientId = (clientId != null && !clientId.trim().isEmpty()) ? clientId.trim() : 
+                       (envClientId != null && !envClientId.trim().isEmpty() ? envClientId.trim() : null);
+        String rawClientSecret = (clientSecret != null && !clientSecret.trim().isEmpty()) ? clientSecret.trim() : 
+                           (envClientSecret != null && !envClientSecret.trim().isEmpty() ? envClientSecret.trim() : null);
+        String rawEncryptionKey = (encryptionKey != null && !encryptionKey.trim().isEmpty()) ? encryptionKey.trim() : 
+                            (envEncryptionKey != null && !envEncryptionKey.trim().isEmpty() ? envEncryptionKey.trim() : null);
+        
+        // Validate and normalize client ID format
+        this.clientId = normalizeClientId(rawClientId);
+        this.clientSecret = rawClientSecret;
+        this.encryptionKey = rawEncryptionKey;
         
         this.restTemplate = createRestTemplate();
+    }
+    
+    /**
+     * Normalize and validate Flutterwave OAuth 2.0 Client ID.
+     * OAuth 2.0 Client IDs should be UUID format (e.g., "c66f5395-8fba-40f7-bb92-4f7c617e75fa").
+     * Legacy API keys (e.g., "FLWPUBK-xxx") are NOT valid for OAuth 2.0.
+     * 
+     * @param clientId Raw client ID from configuration
+     * @return Normalized client ID, or null if invalid
+     */
+    private String normalizeClientId(String clientId) {
+        if (clientId == null || clientId.trim().isEmpty()) {
+            return null;
+        }
+        
+        String trimmed = clientId.trim();
+        
+        // Check if it's a legacy API key format (FLWPUBK-xxx or FLWSECK-xxx)
+        if (trimmed.startsWith("FLWPUBK-") || trimmed.startsWith("FLWSECK-")) {
+            log.error("❌ INVALID CLIENT ID FORMAT: Legacy API key detected: '{}'", 
+                    trimmed.length() > 20 ? trimmed.substring(0, 20) + "..." : trimmed);
+            log.error("   OAuth 2.0 requires a UUID-format Client ID, not legacy API keys.");
+            log.error("   To get OAuth 2.0 credentials:");
+            log.error("   1. Go to Flutterwave Dashboard → Settings → API Keys");
+            log.error("   2. Look for 'Client ID' and 'Client Secret' (OAuth 2.0 section)");
+            log.error("   3. Client ID should be UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx");
+            log.error("   4. Do NOT use Public Key (FLWPUBK-xxx) or Secret Key (FLWSECK-xxx)");
+            return null; // Return null to indicate invalid format
+        }
+        
+        // Validate UUID format (basic check: should have 5 segments separated by hyphens)
+        // UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 characters total)
+        if (trimmed.length() == 36 && trimmed.matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")) {
+            log.info("✅ Valid OAuth 2.0 Client ID format detected (UUID)");
+            return trimmed;
+        }
+        
+        // If it doesn't match UUID format but also isn't legacy key, log warning but allow it
+        // (some environments might have different formats)
+        log.warn("⚠️ Client ID format is not standard UUID: '{}' (length: {})", 
+                trimmed.length() > 30 ? trimmed.substring(0, 30) + "..." : trimmed, 
+                trimmed.length());
+        log.warn("   Expected UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx");
+        log.warn("   If authentication fails, verify you're using OAuth 2.0 Client ID from Flutterwave dashboard");
+        
+        return trimmed; // Return as-is, but log warning
     }
 
     @PostConstruct
@@ -87,23 +139,43 @@ public class FlutterwaveService {
         log.info("  Env FLUTTERWAVE_CLIENT_SECRET: {}", (envClientSecret != null && !envClientSecret.trim().isEmpty()) ? "SET (length: " + envClientSecret.length() + ")" : "NOT SET");
         log.info("  Env FLUTTERWAVE_ENCRYPTION_KEY: {}", (envEncryptionKey != null && !envEncryptionKey.trim().isEmpty()) ? "SET (length: " + envEncryptionKey.length() + ")" : "NOT SET");
         
+        // Validate client ID format
+        if (clientId != null && !clientId.trim().isEmpty()) {
+            String preview = clientId.length() > 20 ? clientId.substring(0, 20) + "..." : clientId;
+            log.info("  Client ID preview: {}", preview);
+            
+            // Check format
+            if (clientId.startsWith("FLWPUBK-") || clientId.startsWith("FLWSECK-")) {
+                log.error("❌ INVALID CLIENT ID: Legacy API key format detected!");
+                log.error("   OAuth 2.0 requires UUID-format Client ID from Flutterwave dashboard.");
+                log.error("   Current value appears to be: {}", preview);
+            } else if (clientId.length() == 36 && clientId.matches("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")) {
+                log.info("  ✅ Client ID format: Valid UUID (OAuth 2.0 compatible)");
+            } else {
+                log.warn("  ⚠️ Client ID format: Non-standard (length: {}, expected UUID format)", clientId.length());
+            }
+        }
+        
         if (clientId == null || clientId.trim().isEmpty()) {
             log.warn("Flutterwave client ID is not configured. Virtual account creation will fail.");
             log.warn("  Please set FLUTTERWAVE_CLIENT_ID environment variable in Railway.");
+            log.warn("  IMPORTANT: Use OAuth 2.0 Client ID (UUID format), NOT legacy API keys!");
         }
         if (clientSecret == null || clientSecret.trim().isEmpty()) {
             log.warn("Flutterwave client secret is not configured. Virtual account creation will fail.");
             log.warn("  Please set FLUTTERWAVE_CLIENT_SECRET environment variable in Railway.");
+            log.warn("  IMPORTANT: Use OAuth 2.0 Client Secret, NOT legacy Secret Key!");
         }
         if (clientId != null && !clientId.trim().isEmpty() && 
             clientSecret != null && !clientSecret.trim().isEmpty()) {
             log.info("✅ FlutterwaveService initialized successfully with credentials");
         } else {
-            log.error("❌ FlutterwaveService initialized but credentials are missing!");
+            log.error("❌ FlutterwaveService initialized but credentials are missing or invalid!");
             log.error("  Set these in Railway Variables:");
-            log.error("    FLUTTERWAVE_CLIENT_ID");
-            log.error("    FLUTTERWAVE_CLIENT_SECRET");
+            log.error("    FLUTTERWAVE_CLIENT_ID (OAuth 2.0 UUID format, NOT FLWPUBK-xxx)");
+            log.error("    FLUTTERWAVE_CLIENT_SECRET (OAuth 2.0 secret, NOT FLWSECK-xxx)");
             log.error("    FLUTTERWAVE_ENCRYPTION_KEY");
+            log.error("  Get OAuth 2.0 credentials from: Flutterwave Dashboard → Settings → API Keys");
         }
     }
 
@@ -125,11 +197,37 @@ public class FlutterwaveService {
             return accessToken;
         }
 
+        // Validate credentials before making request
+        if (clientId == null || clientId.trim().isEmpty()) {
+            String errorMsg = "Flutterwave OAuth 2.0 Client ID is not configured. " +
+                    "Please set FLUTTERWAVE_CLIENT_ID environment variable with a UUID-format Client ID from Flutterwave dashboard.";
+            log.error("❌ {}", errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+        
+        if (clientSecret == null || clientSecret.trim().isEmpty()) {
+            String errorMsg = "Flutterwave OAuth 2.0 Client Secret is not configured. " +
+                    "Please set FLUTTERWAVE_CLIENT_SECRET environment variable from Flutterwave dashboard.";
+            log.error("❌ {}", errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+        
+        // Check if client ID is in legacy format (should have been caught in normalizeClientId, but double-check)
+        if (clientId.startsWith("FLWPUBK-") || clientId.startsWith("FLWSECK-")) {
+            String errorMsg = "Invalid Client ID format: Legacy API key detected. " +
+                    "OAuth 2.0 requires UUID-format Client ID. " +
+                    "Get OAuth 2.0 credentials from Flutterwave Dashboard → Settings → API Keys. " +
+                    "Do NOT use Public Key (FLWPUBK-xxx) or Secret Key (FLWSECK-xxx).";
+            log.error("❌ {}", errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+        
         log.info("Requesting new OAuth 2.0 access token from Flutterwave");
         log.info("OAuth endpoint: {}", OAUTH_TOKEN_URL);
         log.info("Client ID present: {}", clientId != null && !clientId.trim().isEmpty());
         log.info("Client ID length: {}", clientId != null ? clientId.length() : 0);
         log.info("Client ID preview: {}", clientId != null && clientId.length() > 10 ? clientId.substring(0, 10) + "..." : "N/A");
+        log.info("Client ID format: {}", (clientId != null && clientId.length() == 36) ? "UUID (valid)" : "Non-standard");
         log.info("Client Secret present: {}", clientSecret != null && !clientSecret.trim().isEmpty());
         log.info("Client Secret length: {}", clientSecret != null ? clientSecret.length() : 0);
         
@@ -138,10 +236,11 @@ public class FlutterwaveService {
             headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
             
             // OAuth 2.0 token request uses form data (properly encoded)
+            // Ensure client ID and secret are trimmed (should already be done, but double-check)
             MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
             formData.add("grant_type", "client_credentials");
-            formData.add("client_id", clientId);
-            formData.add("client_secret", clientSecret);
+            formData.add("client_id", clientId.trim());
+            formData.add("client_secret", clientSecret.trim());
             
             HttpEntity<MultiValueMap<String, String>> entity = new HttpEntity<>(formData, headers);
             log.info("Sending OAuth token request to Flutterwave...");
@@ -179,12 +278,25 @@ public class FlutterwaveService {
             // Provide detailed error message based on status code
             String detailedError;
             if (statusCode == 401) {
-                detailedError = "Flutterwave authentication failed (401). Please verify:\n" +
-                    "1. FLUTTERWAVE_CLIENT_ID and FLUTTERWAVE_CLIENT_SECRET are correct\n" +
-                    "2. Credentials are for the correct environment (test/live)\n" +
-                    "3. Credentials support OAuth 2.0 (v4 API)\n" +
-                    "4. No extra spaces or characters in Railway environment variables\n" +
-                    "Response: " + (responseBody != null ? responseBody : "No response body");
+                String clientIdPreview = clientId != null && clientId.length() > 20 ? 
+                    clientId.substring(0, 20) + "..." : (clientId != null ? clientId : "null");
+                
+                detailedError = "Flutterwave OAuth 2.0 authentication failed (401 Unauthorized).\n\n" +
+                    "TROUBLESHOOTING STEPS:\n" +
+                    "1. Verify Client ID format:\n" +
+                    "   - Current Client ID preview: " + clientIdPreview + "\n" +
+                    "   - OAuth 2.0 requires UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n" +
+                    "   - ❌ DO NOT use legacy keys: FLWPUBK-xxx or FLWSECK-xxx\n" +
+                    "   - ✅ Get OAuth 2.0 credentials from: Dashboard → Settings → API Keys\n\n" +
+                    "2. Verify credentials are correct:\n" +
+                    "   - FLUTTERWAVE_CLIENT_ID and FLUTTERWAVE_CLIENT_SECRET must match\n" +
+                    "   - Credentials must be for the correct environment (test vs live)\n" +
+                    "   - Ensure no extra spaces or special characters in Railway variables\n\n" +
+                    "3. Verify OAuth 2.0 is enabled:\n" +
+                    "   - Your Flutterwave account must support OAuth 2.0 (v4 API)\n" +
+                    "   - Legacy API keys (v3) will NOT work with OAuth 2.0\n\n" +
+                    "Flutterwave Response: " + (responseBody != null && !responseBody.trim().isEmpty() ? 
+                        responseBody : "No response body - check Flutterwave dashboard for account status");
             } else {
                 detailedError = "Flutterwave OAuth error (HTTP " + statusCode + "): " + 
                     (responseBody != null ? responseBody : "Empty response");
