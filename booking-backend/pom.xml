@@ -113,8 +113,10 @@
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
+                            <version>1.18.30</version>
                         </path>
                     </annotationProcessorPaths>
+                    <proc>full</proc>
                     <compilerArgs>
                         <arg>-parameters</arg>
                     </compilerArgs>
