@@ -38,6 +38,7 @@ public class FlutterwaveService {
     private static final String FLUTTERWAVE_API_BASE_URL = "https://api.flutterwave.com/v3";
     private static final String VIRTUAL_ACCOUNT_URL = FLUTTERWAVE_API_BASE_URL + "/virtual-account-numbers";
     private static final String TRANSFER_URL = FLUTTERWAVE_API_BASE_URL + "/transfers";
+    private static final String TRANSACTIONS_URL = FLUTTERWAVE_API_BASE_URL + "/transactions";
     private static final String WEBHOOK_SECRET_HASH_HEADER = "verif-hash"; // Flutterwave webhook verification header
     private static final int CONNECT_TIMEOUT_MS = 10000; // 10 seconds
     private static final int READ_TIMEOUT_MS = 30000; // 30 seconds
@@ -580,6 +581,103 @@ public class FlutterwaveService {
             log.error("Unexpected error verifying transaction", e);
             throw new RuntimeException("Unexpected error: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Fetch transactions from Flutterwave for a specific customer email
+     * @param customerEmail Customer email to fetch transactions for
+     * @return List of transaction verifications
+     */
+    public java.util.List<TransactionVerification> fetchTransactionsByEmail(String customerEmail) {
+        log.debug("Fetching transactions from Flutterwave for email: {}", customerEmail);
+        
+        if (secretKey == null || secretKey.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "Flutterwave secret key is not configured. Please set FLUTTERWAVE_SECRET_KEY environment variable."
+            );
+        }
+        
+        try {
+            // Build query parameters - fetch transactions by customer email
+            String url = TRANSACTIONS_URL + "?customer_email=" + java.net.URLEncoder.encode(customerEmail, "UTF-8");
+            
+            HttpEntity<Void> entity = new HttpEntity<>(createAuthenticatedHeaders());
+            ResponseEntity<FlutterwaveTransactionsResponse> response = restTemplate.exchange(
+                    url,
+                    HttpMethod.GET,
+                    entity,
+                    FlutterwaveTransactionsResponse.class
+            );
+
+            FlutterwaveTransactionsResponse flutterwaveResponse = response.getBody();
+            if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
+                    && flutterwaveResponse.getData() != null) {
+                java.util.List<TransactionVerification> transactions = new java.util.ArrayList<>();
+                for (FlutterwaveTransactionData data : flutterwaveResponse.getData()) {
+                    // Only include successful/completed transactions
+                    if (data.getStatus() != null && 
+                        ("successful".equalsIgnoreCase(data.getStatus()) || 
+                         "SUCCESSFUL".equalsIgnoreCase(data.getStatus()) ||
+                         "completed".equalsIgnoreCase(data.getStatus()) ||
+                         "COMPLETED".equalsIgnoreCase(data.getStatus()))) {
+                        BigDecimal amount = data.getAmount() != null ? 
+                            new BigDecimal(data.getAmount()).divide(new BigDecimal("100")) : null;
+                        
+                        transactions.add(TransactionVerification.builder()
+                                .txRef(data.getTxRef())
+                                .flwRef(data.getFlwRef())
+                                .status(data.getStatus())
+                                .amount(amount)
+                                .currency(data.getCurrency())
+                                .message("Fetched from Flutterwave")
+                                .build());
+                    }
+                }
+                log.info("Fetched {} successful transactions from Flutterwave for email: {}", transactions.size(), customerEmail);
+                return transactions;
+            } else {
+                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error from Flutterwave";
+                log.warn("No transactions found or error fetching transactions. Message: {}", errorMsg);
+                return java.util.Collections.emptyList();
+            }
+        } catch (HttpClientErrorException | HttpServerErrorException e) {
+            String responseBody = e.getResponseBodyAsString();
+            log.warn("Flutterwave API error fetching transactions: HTTP {} - Response: {}", 
+                    e.getStatusCode().value(), responseBody);
+            // Return empty list instead of throwing - fetching transactions is not critical
+            return java.util.Collections.emptyList();
+        } catch (RestClientException e) {
+            log.warn("Network error fetching transactions: {}", e.getMessage());
+            return java.util.Collections.emptyList();
+        } catch (Exception e) {
+            log.warn("Unexpected error fetching transactions: {}", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    // Transaction list response DTOs
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class FlutterwaveTransactionsResponse {
+        private String status;
+        private String message;
+        private java.util.List<FlutterwaveTransactionData> data;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    static class FlutterwaveTransactionData {
+        @JsonProperty("tx_ref")
+        private String txRef;
+        @JsonProperty("flw_ref")
+        private String flwRef;
+        private String status;
+        private String amount; // Amount in kobo (smallest currency unit)
+        private String currency;
+        @JsonProperty("customer")
+        private Map<String, Object> customer;
+        @JsonProperty("created_at")
+        private String createdAt;
     }
 
     @lombok.Builder
