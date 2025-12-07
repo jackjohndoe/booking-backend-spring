@@ -106,4 +106,60 @@ public class WalletController {
             ));
         }
     }
+
+    @Operation(summary = "Verify and process a specific transaction", 
+            description = "Verifies a transaction reference with Flutterwave and processes it if successful")
+    @ApiResponse(responseCode = "200", description = "Transaction verified and processed successfully")
+    @ApiResponse(responseCode = "400", description = "Transaction verification failed")
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/verify-transaction")
+    public ResponseEntity<?> verifyTransaction(
+            @RequestBody Map<String, String> request,
+            @AuthenticationPrincipal BookingUserDetails userDetails) {
+        try {
+            String txRef = request.get("txRef");
+            if (txRef == null || txRef.trim().isEmpty()) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "Transaction reference (txRef) is required"
+                ));
+            }
+            
+            TransactionResponse transaction = walletService.verifyAndProcessTransaction(txRef, userDetails.getUser());
+            return ResponseEntity.ok(Map.of(
+                "status", "success",
+                "message", "Transaction verified and processed successfully",
+                "transaction", transaction
+            ));
+        } catch (Exception e) {
+            log.error("Error verifying transaction for user {}: {}", userDetails.getUser().getId(), e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "status", "error",
+                "message", "Failed to verify transaction: " + e.getMessage()
+            ));
+        }
+    }
+
+    @Operation(summary = "Sync all transactions from Flutterwave", 
+            description = "Verifies all pending transactions and syncs wallet balance with Flutterwave")
+    @ApiResponse(responseCode = "200", description = "All transactions synced successfully")
+    @ApiResponse(responseCode = "500", description = "Error syncing transactions")
+    @SecurityRequirement(name = "bearerAuth")
+    @PostMapping("/sync-all")
+    public ResponseEntity<?> syncAllTransactions(
+            @AuthenticationPrincipal BookingUserDetails userDetails) {
+        try {
+            walletService.syncAllTransactionsFromFlutterwave(userDetails.getUser());
+            return ResponseEntity.ok(Map.of(
+                "status", "success",
+                "message", "All transactions synced successfully"
+            ));
+        } catch (Exception e) {
+            log.error("Error syncing all transactions for user {}: {}", userDetails.getUser().getId(), e.getMessage(), e);
+            return ResponseEntity.status(500).body(Map.of(
+                "status", "error",
+                "message", "Failed to sync all transactions: " + e.getMessage()
+            ));
+        }
+    }
 }

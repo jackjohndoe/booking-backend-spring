@@ -30,4 +30,6 @@ public interface TransactionRepository extends JpaRepository<Transaction, Long> 
     Optional<Transaction> findByFlutterwaveFlwRef(String flutterwaveFlwRef);
     
     Optional<Transaction> findByFlutterwaveTransferId(String flutterwaveTransferId);
+    
+    List<Transaction> findByWalletIdAndStatus(Long walletId, Transaction.Status status);
 }
