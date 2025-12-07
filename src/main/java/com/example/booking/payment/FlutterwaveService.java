@@ -37,7 +37,7 @@ import org.springframework.util.MultiValueMap;
 @Service
 public class FlutterwaveService {
 
-    private static final String FLUTTERWAVE_API_BASE_URL = "https://api.flutterwave.com/v3";
+    private static final String FLUTTERWAVE_API_BASE_URL = "https://api.flutterwave.com/v4";
     private static final String OAUTH_TOKEN_URL = "https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
     private static final String VIRTUAL_ACCOUNT_URL = FLUTTERWAVE_API_BASE_URL + "/virtual-account-numbers";
     private static final String WEBHOOK_SECRET_HASH_HEADER = "verif-hash"; // Flutterwave webhook verification header
@@ -94,10 +94,13 @@ public class FlutterwaveService {
             return accessToken;
         }
 
-        log.info("Requesting new OAuth 2.0 access token from Flutterwave (using LIVE credentials)");
+        log.info("Requesting new OAuth 2.0 access token from Flutterwave");
         log.info("OAuth endpoint: {}", OAUTH_TOKEN_URL);
         log.info("Client ID present: {}", clientId != null && !clientId.trim().isEmpty());
+        log.info("Client ID length: {}", clientId != null ? clientId.length() : 0);
+        log.info("Client ID preview: {}", clientId != null && clientId.length() > 10 ? clientId.substring(0, 10) + "..." : "N/A");
         log.info("Client Secret present: {}", clientSecret != null && !clientSecret.trim().isEmpty());
+        log.info("Client Secret length: {}", clientSecret != null ? clientSecret.length() : 0);
         
         try {
             HttpHeaders headers = new HttpHeaders();
@@ -138,15 +141,46 @@ public class FlutterwaveService {
             }
         } catch (HttpClientErrorException | HttpServerErrorException e) {
             String responseBody = e.getResponseBodyAsString();
+            int statusCode = e.getStatusCode().value();
             log.error("❌ Flutterwave OAuth token error: HTTP {} - Response: '{}'", 
-                    e.getStatusCode().value(), responseBody != null ? responseBody : "[empty]");
-            log.error("OAuth token request failed. Check if Client ID and Secret are correct for LIVE environment.");
-            throw new RuntimeException("Failed to obtain Flutterwave OAuth token (HTTP " + 
-                    e.getStatusCode().value() + "): " + (responseBody != null ? responseBody : "Empty response"), e);
+                    statusCode, responseBody != null ? responseBody : "[empty]");
+            
+            // Provide detailed error message based on status code
+            String detailedError;
+            if (statusCode == 401) {
+                detailedError = "Flutterwave authentication failed (401). Please verify:\n" +
+                    "1. FLUTTERWAVE_CLIENT_ID and FLUTTERWAVE_CLIENT_SECRET are correct\n" +
+                    "2. Credentials are for the correct environment (test/live)\n" +
+                    "3. Credentials support OAuth 2.0 (v4 API)\n" +
+                    "4. No extra spaces or characters in Railway environment variables\n" +
+                    "Response: " + (responseBody != null ? responseBody : "No response body");
+            } else {
+                detailedError = "Flutterwave OAuth error (HTTP " + statusCode + "): " + 
+                    (responseBody != null ? responseBody : "Empty response");
+            }
+            
+            log.error("OAuth token request failed. {}", detailedError);
+            throw new RuntimeException(detailedError, e);
         } catch (RestClientException e) {
             log.error("❌ Network error obtaining OAuth token: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to obtain Flutterwave OAuth token: Network error - " + 
                     e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Test OAuth authentication by attempting to get an access token.
+     * This is used for diagnostic purposes.
+     * 
+     * @return true if OAuth authentication succeeds, false otherwise
+     */
+    public boolean testOAuthAuthentication() {
+        try {
+            String token = getAccessToken();
+            return token != null && !token.trim().isEmpty();
+        } catch (Exception e) {
+            log.error("OAuth authentication test failed: {}", e.getMessage());
+            return false;
         }
     }
 
@@ -158,7 +192,135 @@ public class FlutterwaveService {
     }
 
     /**
-     * Create a virtual account number for a customer.
+     * Create a static (permanent) virtual account number for a customer.
+     * Static accounts are reusable and ideal for wallet funding.
+     * 
+     * @param email Customer email
+     * @param name Customer full name
+     * @param txRef Unique transaction reference
+     * @param bvn Optional BVN for NGN accounts (recommended for static accounts)
+     * @return VirtualAccountResponse with account details
+     */
+    public VirtualAccountResponse createStaticVirtualAccount(String email, String name, String txRef, String bvn) {
+        log.debug("Creating static virtual account for: email={}, txRef={}", email, txRef);
+        
+        if (clientId == null || clientId.trim().isEmpty() || 
+            clientSecret == null || clientSecret.trim().isEmpty()) {
+            throw new IllegalStateException(
+                "Flutterwave credentials not configured. Please set FLUTTERWAVE_CLIENT_ID and FLUTTERWAVE_CLIENT_SECRET environment variables."
+            );
+        }
+        
+        try {
+            Map<String, Object> params = new HashMap<>();
+            params.put("email", email);
+            params.put("is_permanent", true); // Static account flag
+            params.put("currency", "NGN");
+            params.put("tx_ref", txRef);
+            
+            // Add firstname and lastname
+            if (name != null && !name.trim().isEmpty()) {
+                params.put("firstname", extractFirstName(name));
+                String lastName = extractLastName(name);
+                if (!lastName.isEmpty()) {
+                    params.put("lastname", lastName);
+                }
+            }
+            
+            // Add BVN if provided (recommended for NGN static accounts)
+            if (bvn != null && !bvn.trim().isEmpty()) {
+                params.put("bvn", bvn);
+            }
+            
+            HttpEntity<Map<String, Object>> entity = new HttpEntity<>(params, createAuthenticatedHeaders());
+            ResponseEntity<FlutterwaveVirtualAccountResponse> response = restTemplate.exchange(
+                    VIRTUAL_ACCOUNT_URL,
+                    HttpMethod.POST,
+                    entity,
+                    FlutterwaveVirtualAccountResponse.class
+            );
+
+            FlutterwaveVirtualAccountResponse flutterwaveResponse = response.getBody();
+            if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
+                    && flutterwaveResponse.getData() != null) {
+                VirtualAccountData data = flutterwaveResponse.getData();
+                log.info("Static virtual account created successfully: accountNumber={}, bankName={}, txRef={}", 
+                        data.getAccountNumber(), data.getBankName(), txRef);
+                
+                String accountName = data.getAccountName() != null ? data.getAccountName() : 
+                    (name != null && !name.trim().isEmpty() ? name : "Nigerian Apartments Leasing Ltd");
+                
+                return VirtualAccountResponse.builder()
+                        .accountNumber(data.getAccountNumber())
+                        .accountName(accountName)
+                        .bankName(data.getBankName())
+                        .txRef(txRef)
+                        .flwRef(data.getFlwRef())
+                        .build();
+            } else {
+                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error from Flutterwave";
+                String status = flutterwaveResponse != null ? flutterwaveResponse.getStatus() : "null";
+                log.error("Flutterwave static virtual account creation failed. Status: {}, Message: {}", status, errorMsg);
+                
+                if (errorMsg == null || errorMsg.trim().isEmpty()) {
+                    errorMsg = "Flutterwave API returned status: " + status + ". Check Flutterwave dashboard for details.";
+                }
+                throw new RuntimeException(errorMsg);
+            }
+        } catch (HttpClientErrorException | HttpServerErrorException e) {
+            String responseBody = e.getResponseBodyAsString();
+            int statusCode = e.getStatusCode().value();
+            log.error("Flutterwave API error creating static virtual account: HTTP {} - Response body: '{}'", 
+                    statusCode, responseBody != null ? responseBody : "[empty]");
+            
+            if (statusCode == 401) {
+                log.error("Flutterwave returned 401 Unauthorized. Detailed diagnosis:");
+                log.error("  1. OAuth endpoint: {}", OAUTH_TOKEN_URL);
+                log.error("  2. Client ID configured: {} (length: {})", 
+                    clientId != null && !clientId.trim().isEmpty(), 
+                    clientId != null ? clientId.length() : 0);
+                log.error("  3. Client Secret configured: {} (length: {})", 
+                    clientSecret != null && !clientSecret.trim().isEmpty(),
+                    clientSecret != null ? clientSecret.length() : 0);
+                log.error("  4. Possible causes:");
+                log.error("     - Client ID/Secret are incorrect or invalid");
+                log.error("     - Credentials are for wrong environment (test vs live)");
+                log.error("     - Credentials are legacy API keys (not OAuth 2.0)");
+                log.error("     - Credentials have extra spaces or special characters");
+                log.error("     - Flutterwave account doesn't have OAuth 2.0 enabled");
+                log.error("  5. Response body: {}", responseBody != null ? responseBody : "[empty]");
+            }
+            
+            String errorMessage = "Flutterwave API returned error";
+            if (responseBody != null && !responseBody.trim().isEmpty()) {
+                try {
+                    com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                    @SuppressWarnings("unchecked")
+                    java.util.Map<String, Object> errorData = mapper.readValue(responseBody, java.util.Map.class);
+                    if (errorData != null) {
+                        String msg = (String) errorData.get("message");
+                        if (msg != null && !msg.trim().isEmpty()) {
+                            errorMessage = msg;
+                        }
+                    }
+                } catch (Exception parseException) {
+                    errorMessage = responseBody.length() > 200 ? responseBody.substring(0, 200) : responseBody;
+                }
+            }
+            
+            throw new RuntimeException(errorMessage, e);
+        } catch (RestClientException e) {
+            log.error("Network error creating static virtual account", e);
+            throw new RuntimeException("Network error connecting to Flutterwave: " + e.getMessage(), e);
+        } catch (Exception e) {
+            log.error("Unexpected error creating static virtual account", e);
+            throw new RuntimeException("Unexpected error: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Create a dynamic (temporary) virtual account number for a customer.
+     * Dynamic accounts are for one-time transactions and expire after use.
      * 
      * @param email Customer email
      * @param amount Expected payment amount (in NGN)
@@ -425,6 +587,7 @@ public class FlutterwaveService {
         private String accountName;
         private String bankName;
         private String txRef;
+        private String flwRef; // Flutterwave reference for transaction matching
     }
 
     @lombok.Builder
