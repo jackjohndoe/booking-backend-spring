@@ -56,6 +56,18 @@ public class Transaction {
     @Column(name = "external_payout_id")
     private String externalPayoutId;
 
+    @Column(name = "flutterwave_tx_ref")
+    private String flutterwaveTxRef;
+
+    @Column(name = "flutterwave_flw_ref")
+    private String flutterwaveFlwRef;
+
+    @Column(name = "flutterwave_status")
+    private String flutterwaveStatus;
+
+    @Column(name = "flutterwave_transfer_id")
+    private String flutterwaveTransferId;
+
     private String reference;
     private String metadata;
 
@@ -86,5 +98,18 @@ public class Transaction {
     @PrePersist
     public void onCreate() {
         this.createdAt = OffsetDateTime.now();
+    }
+
+    // Manual setters for Flutterwave fields (Lombok not working in Docker build)
+    public void setFlutterwaveFlwRef(String flutterwaveFlwRef) {
+        this.flutterwaveFlwRef = flutterwaveFlwRef;
+    }
+
+    public void setFlutterwaveStatus(String flutterwaveStatus) {
+        this.flutterwaveStatus = flutterwaveStatus;
+    }
+
+    public void setFlutterwaveTransferId(String flutterwaveTransferId) {
+        this.flutterwaveTransferId = flutterwaveTransferId;
     }
 }

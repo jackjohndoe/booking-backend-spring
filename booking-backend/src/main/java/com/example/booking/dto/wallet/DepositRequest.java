@@ -18,6 +18,14 @@ public class DepositRequest {
     @Schema(description = "Payment method ID (optional)", example = "pm_1234567890")
     private String paymentMethodId;
     
+    @Schema(description = "Flutterwave transaction reference (tx_ref) for webhook matching", example = "wallet_topup_1234567890")
+    private String reference;
+    
     @Schema(description = "Optional description for the deposit", example = "Wallet top-up")
     private String description;
+
+    // Manual getter for reference (Lombok not working in Docker build)
+    public String getReference() {
+        return reference;
+    }
 }

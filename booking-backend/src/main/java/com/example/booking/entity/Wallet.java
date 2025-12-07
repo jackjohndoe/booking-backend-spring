@@ -29,12 +29,21 @@ public class Wallet {
 
     @Column(nullable = false, length = 3)
     @Builder.Default
-    private String currency = "USD";
+    private String currency = "NGN";
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     @Builder.Default
     private Status status = Status.ACTIVE;
+
+    @Column(name = "flutterwave_balance", precision = 19, scale = 2)
+    private java.math.BigDecimal flutterwaveBalance;
+
+    @Column(name = "last_synced_at")
+    private OffsetDateTime lastSyncedAt;
+
+    @Column(name = "flutterwave_account_id")
+    private String flutterwaveAccountId;
 
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
@@ -54,5 +63,14 @@ public class Wallet {
     @PreUpdate
     public void onUpdate() {
         this.updatedAt = OffsetDateTime.now();
+    }
+
+    // Manual getter/setter for lastSyncedAt (Lombok not working in Docker build)
+    public OffsetDateTime getLastSyncedAt() {
+        return lastSyncedAt;
+    }
+
+    public void setLastSyncedAt(OffsetDateTime lastSyncedAt) {
+        this.lastSyncedAt = lastSyncedAt;
     }
 }

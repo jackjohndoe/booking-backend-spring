@@ -18,6 +18,28 @@ public class WithdrawalRequest {
     @Schema(description = "Destination account ID for withdrawal", example = "RCP_1234567890")
     private String destinationAccountId;
     
+    @Schema(description = "Bank code for Flutterwave transfer (e.g., 044 for Access Bank)", example = "044")
+    private String accountBank;
+    
+    @Schema(description = "Bank account number for withdrawal", example = "1234567890")
+    private String accountNumber;
+    
+    @Schema(description = "Beneficiary name (account holder name)", example = "John Doe")
+    private String beneficiaryName;
+    
     @Schema(description = "Optional description for the withdrawal", example = "Withdrawal to bank account")
     private String description;
+
+    // Manual getters (Lombok not working in Docker build)
+    public String getAccountBank() {
+        return accountBank;
+    }
+
+    public String getAccountNumber() {
+        return accountNumber;
+    }
+
+    public String getBeneficiaryName() {
+        return beneficiaryName;
+    }
 }
