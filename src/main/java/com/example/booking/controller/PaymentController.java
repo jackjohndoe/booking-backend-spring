@@ -263,6 +263,16 @@ public class PaymentController {
                 return ResponseEntity.badRequest().body(Map.of("error", "Amount must be greater than zero"));
             }
 
+            // Flutterwave v3 API limit: 500,000 NGN per virtual account
+            BigDecimal flutterwaveMaxAmount = new BigDecimal("500000");
+            if (amount.compareTo(flutterwaveMaxAmount) > 0) {
+                return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Amount exceeds Flutterwave limit",
+                    "message", "Virtual account creation is limited to ₦500,000 per transaction. Please use card payment for larger amounts or split into multiple transactions.",
+                    "maxAmount", "500000"
+                ));
+            }
+
             // Create virtual account via FlutterwaveService
             FlutterwaveService.VirtualAccountResponse virtualAccount = flutterwaveService.createVirtualAccount(
                     emailObj.toString(),
