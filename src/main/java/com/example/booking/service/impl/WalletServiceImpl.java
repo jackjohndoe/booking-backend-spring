@@ -941,7 +941,6 @@ public class WalletServiceImpl implements WalletService {
                         }
                         
                         // Update Flutterwave references if missing or different
-                        String txRef = verification.getTxRef();
                         String flwRef = verification.getFlwRef();
                         if (txRef != null && (existing.getFlutterwaveTxRef() == null || !existing.getFlutterwaveTxRef().equals(txRef))) {
                             existing.setFlutterwaveTxRef(txRef);
@@ -983,7 +982,6 @@ public class WalletServiceImpl implements WalletService {
                     BigDecimal amount = verification.getAmount() != null ? verification.getAmount() : BigDecimal.ZERO;
                     
                     // CRITICAL: Ensure transaction has proper reference in all fields for reliable tracking
-                    String txRef = verification.getTxRef();
                     String flwRef = verification.getFlwRef();
                     
                     // Use the charged amount (what customer paid), not settled amount
