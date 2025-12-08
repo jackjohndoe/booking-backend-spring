@@ -756,14 +756,52 @@ public class WalletServiceImpl implements WalletService {
         try {
             log.info("Verifying and processing transaction: txRef={}, userId={}", txRef, user.getId());
             
-            // Check if transaction already exists
+            // Check if transaction already exists by Flutterwave transaction reference
             Transaction existingTransaction = transactionRepository.findByFlutterwaveTxRef(txRef).orElse(null);
+            
+            // Also check by Flutterwave flwRef if we have it (for numeric transaction IDs)
+            if (existingTransaction == null && txRef.matches("^\\d{15,}$")) {
+                // If txRef is a numeric Flutterwave transaction ID, also check by flwRef
+                existingTransaction = transactionRepository.findByFlutterwaveFlwRef(txRef).orElse(null);
+            }
             
             // Verify transaction with Flutterwave
             FlutterwaveService.TransactionVerification verification = flutterwaveService.verifyTransaction(txRef);
             
             if (verification == null || verification.getStatus() == null) {
                 throw new RuntimeException("Transaction verification failed: No response from Flutterwave");
+            }
+            
+            // Get the actual Flutterwave transaction reference from verification response
+            String flutterwaveTxRef = verification.getTxRef();
+            String flutterwaveFlwRef = verification.getFlwRef();
+            
+            // If we didn't find transaction by the txRef we used, try finding by the Flutterwave txRef from response
+            if (existingTransaction == null && flutterwaveTxRef != null && !flutterwaveTxRef.equals(txRef)) {
+                existingTransaction = transactionRepository.findByFlutterwaveTxRef(flutterwaveTxRef).orElse(null);
+                if (existingTransaction == null && flutterwaveFlwRef != null) {
+                    existingTransaction = transactionRepository.findByFlutterwaveFlwRef(flutterwaveFlwRef).orElse(null);
+                }
+            }
+            
+            // Also check for pending transactions for this user that might match (by amount and user)
+            if (existingTransaction == null && verification.getAmount() != null) {
+                // Get wallet for user to find pending transactions
+                Wallet userWallet = walletRepository.findByUserId(user.getId()).orElse(null);
+                if (userWallet != null) {
+                    java.util.List<Transaction> pendingTransactions = transactionRepository.findByWalletIdAndStatus(
+                        userWallet.getId(), Transaction.Status.PENDING);
+                    for (Transaction pending : pendingTransactions) {
+                        // Match by amount (within 1 NGN tolerance) and user
+                        if (pending.getAmount() != null && 
+                            pending.getAmount().subtract(verification.getAmount()).abs().compareTo(new BigDecimal("1")) <= 0) {
+                            log.info("Found matching pending transaction {} for Flutterwave transaction {} (matched by amount: NGN {})", 
+                                    pending.getId(), flutterwaveTxRef != null ? flutterwaveTxRef : txRef, verification.getAmount());
+                            existingTransaction = pending;
+                            break;
+                        }
+                    }
+                }
             }
             
             boolean isSuccessful = "successful".equalsIgnoreCase(verification.getStatus()) || 
@@ -805,6 +843,20 @@ public class WalletServiceImpl implements WalletService {
                 if (existingTransaction.getStatus() != Transaction.Status.COMPLETED) {
                 BigDecimal oldBalance = wallet.getBalance();
                 existingTransaction.setStatus(Transaction.Status.COMPLETED);
+                // Update with Flutterwave transaction references from verification response
+                // The verification response contains the actual Flutterwave txRef (which might differ from local reference)
+                String flutterwaveTxRef = verification.getTxRef();
+                if (flutterwaveTxRef != null && !flutterwaveTxRef.isEmpty()) {
+                    existingTransaction.setFlutterwaveTxRef(flutterwaveTxRef);
+                    // Also update reference field if it was a local reference
+                    if (existingTransaction.getReference() != null && 
+                        (existingTransaction.getReference().startsWith("DEP_") || 
+                         existingTransaction.getReference().startsWith("WIT_"))) {
+                        log.info("Updating local reference {} with Flutterwave txRef: {}", 
+                                existingTransaction.getReference(), flutterwaveTxRef);
+                        existingTransaction.setReference(flutterwaveTxRef);
+                    }
+                }
                 existingTransaction.setFlutterwaveFlwRef(verification.getFlwRef());
                 existingTransaction.setFlutterwaveStatus(verification.getStatus());
                 existingTransaction.setProcessedAt(java.time.OffsetDateTime.now());
@@ -812,8 +864,8 @@ public class WalletServiceImpl implements WalletService {
                 // Recalculate balance from all transactions instead of incremental update
                 syncBalanceWithFlutterwave(user);
                 wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
-                log.info("✅ Transaction updated and wallet credited with FULL charged amount: userId={}, amountCharged=NGN {}, oldBalance=NGN {}, newBalance=NGN {}, txRef={}", 
-                        user.getId(), amount, oldBalance, wallet.getBalance(), txRef);
+                log.info("✅ Transaction updated and wallet credited with FULL charged amount: userId={}, amountCharged=NGN {}, oldBalance=NGN {}, newBalance=NGN {}, txRef={}, flutterwaveTxRef={}", 
+                        user.getId(), amount, oldBalance, wallet.getBalance(), txRef, flutterwaveTxRef);
                 } else {
                     log.info("Transaction {} already completed", txRef);
                 }
@@ -1288,7 +1340,40 @@ public class WalletServiceImpl implements WalletService {
                         log.info("Pending transaction has no FlutterwaveTxRef, using reference field: {}", txRef);
                     }
                     
+                    // Validate that txRef looks like a Flutterwave transaction reference
+                    // Accept: email-based refs (contains @), wallet_topup refs, listing refs, or numeric Flutterwave transaction IDs
+                    // Skip local references like DEP_timestamp_userId that aren't Flutterwave references
                     if (txRef != null && !txRef.isEmpty()) {
+                        // Check if it's a numeric Flutterwave transaction ID (typically 15+ digits)
+                        boolean isNumericFlutterwaveId = txRef.matches("^\\d{15,}$");
+                        // Check if it's a Flutterwave txRef pattern (contains email, wallet_topup, listing, etc.)
+                        boolean isFlutterwaveTxRef = txRef.contains("@") || 
+                                                     txRef.contains("wallet_topup") || 
+                                                     txRef.contains("listing") ||
+                                                     txRef.startsWith("wallet_topup_") ||
+                                                     txRef.contains("_listing_");
+                        
+                        boolean isValidFlutterwaveRef = isNumericFlutterwaveId || isFlutterwaveTxRef;
+                        
+                        if (!isValidFlutterwaveRef) {
+                            log.warn("⚠️ Skipping verification of transaction {} with local reference format (not a Flutterwave txRef): {}. This transaction was likely created locally and never sent to Flutterwave.", 
+                                    transaction.getId(), txRef);
+                            // Mark local transactions that can't be verified as failed after 24 hours
+                            if (transaction.getCreatedAt() != null && 
+                                transaction.getCreatedAt().isBefore(java.time.OffsetDateTime.now().minusHours(24))) {
+                                transaction.setStatus(Transaction.Status.FAILED);
+                                transaction.setDescription(transaction.getDescription() + " - Failed: Local reference never verified with Flutterwave");
+                                transactionRepository.save(transaction);
+                                log.info("Marked old local transaction {} as FAILED (never verified with Flutterwave)", transaction.getId());
+                            }
+                            pendingFailed++;
+                            continue;
+                        }
+                        
+                        if (isNumericFlutterwaveId) {
+                            log.info("Detected numeric Flutterwave transaction ID: {}", txRef);
+                        }
+                        
                         log.info("🔄 Verifying pending transaction: txRef={}, transactionId={}, amount={}", 
                                 txRef, transaction.getId(), transaction.getAmount());
                         
@@ -1307,6 +1392,19 @@ public class WalletServiceImpl implements WalletService {
                                 }
                     } catch (Exception e) {
                                 lastError = e;
+                                // Check if error is "No transaction was found" - this means the reference doesn't exist in Flutterwave
+                                if (e.getMessage() != null && e.getMessage().contains("No transaction was found")) {
+                                    log.warn("⚠️ Transaction reference {} not found in Flutterwave. This may be a local reference that was never sent to Flutterwave.", txRef);
+                                    // Mark as failed if it's been pending for more than 24 hours
+                                    if (transaction.getCreatedAt() != null && 
+                                        transaction.getCreatedAt().isBefore(java.time.OffsetDateTime.now().minusHours(24))) {
+                                        transaction.setStatus(Transaction.Status.FAILED);
+                                        transaction.setDescription(transaction.getDescription() + " - Failed: Transaction not found in Flutterwave");
+                                        transactionRepository.save(transaction);
+                                        log.info("Marked transaction {} as FAILED (not found in Flutterwave)", transaction.getId());
+                                    }
+                                    break; // Don't retry if transaction doesn't exist
+                                }
                                 if (retry < 3) {
                                     log.warn("⚠️ Verification attempt {} failed for txRef={}, retrying... Error: {}", 
                                             retry, txRef, e.getMessage());
