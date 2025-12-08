@@ -908,21 +908,104 @@ public class WalletServiceImpl implements WalletService {
             log.info("Processing {} transactions fetched from Flutterwave for user {} (email: {})", 
                     flutterwaveTransactions.size(), user.getId(), normalizedEmail);
             
-            // If email-based fetching returned 0 transactions, try alternative methods
-            // This handles cases where Flutterwave API doesn't return transactions by email
-            // but transactions exist (e.g., due to email mismatch, API limitations, etc.)
-            if (flutterwaveTransactions.isEmpty() && normalizedEmail != null) {
-                log.warn("⚠️ Email-based fetching returned 0 transactions for user {} (email: {}). " +
-                        "This may indicate: 1) No transactions exist, 2) Email mismatch in Flutterwave, " +
-                        "3) Transactions exist but weren't fetched. Will verify pending transactions instead.", 
-                        user.getId(), normalizedEmail);
+            // CRITICAL: Always verify ALL existing transactions in database BEFORE processing
+            // This ensures we catch ALL successful transactions that exist in Flutterwave, even if email query fails
+            if (normalizedEmail != null && wallet != null) {
+                log.info("🔄 Verifying ALL existing transactions in database to ensure we have all successful Flutterwave transactions...");
                 
-                // Try to verify any pending transactions that might have txRef patterns
-                // This will catch transactions that exist in Flutterwave but weren't fetched by email
-                log.info("🔄 Attempting to verify pending transactions that might exist in Flutterwave...");
+                // Get ALL transactions from database (up to 1000) to verify them individually
+                java.util.List<Transaction> allUserTransactions = transactionRepository.findByWalletIdOrderByCreatedAtDesc(
+                        wallet.getId(), org.springframework.data.domain.PageRequest.of(0, 1000)) // Get up to 1000 transactions
+                        .getContent();
+                
+                log.info("Found {} existing transactions in database for user {}. Verifying each one with Flutterwave...", 
+                        allUserTransactions.size(), user.getId());
+                
+                // Collect ALL txRefs from existing transactions (not just pending)
+                java.util.Set<String> txRefsToTry = new java.util.HashSet<>();
+                
+                for (Transaction txn : allUserTransactions) {
+                    // Collect FlutterwaveTxRef
+                    if (txn.getFlutterwaveTxRef() != null && !txn.getFlutterwaveTxRef().isEmpty()) {
+                        txRefsToTry.add(txn.getFlutterwaveTxRef());
+                    }
+                    // Collect reference field if it looks like a Flutterwave txRef
+                    if (txn.getReference() != null && !txn.getReference().isEmpty()) {
+                        String ref = txn.getReference();
+                        // Check if reference looks like a Flutterwave txRef pattern
+                        if (ref.contains("@") || ref.contains("wallet_topup") || ref.contains("listing") || 
+                            ref.startsWith("wallet_topup_") || ref.contains("_listing_")) {
+                            txRefsToTry.add(ref);
+                        }
+                    }
+                    // Also check paymentReference
+                    if (txn.getPaymentReference() != null && !txn.getPaymentReference().isEmpty()) {
+                        String ref = txn.getPaymentReference();
+                        if (ref.contains("@") || ref.contains("wallet_topup") || ref.contains("listing") || 
+                            ref.startsWith("wallet_topup_") || ref.contains("_listing_")) {
+                            txRefsToTry.add(ref);
+                        }
+                    }
+                }
+                
+                log.info("🔄 Attempting to verify {} unique transaction references with Flutterwave...", txRefsToTry.size());
+                
+                // Try to verify each potential txRef with Flutterwave
+                int verifiedByPattern = 0;
+                int failedByPattern = 0;
+                int alreadyCompleted = 0;
+                for (String txRef : txRefsToTry) {
+                    try {
+                        // Check if this transaction is already in our Flutterwave list
+                        boolean alreadyInList = flutterwaveTransactions.stream()
+                            .anyMatch(t -> t.getTxRef() != null && t.getTxRef().equals(txRef));
+                        
+                        if (alreadyInList) {
+                            alreadyCompleted++;
+                            continue; // Skip if already fetched from Flutterwave
+                        }
+                        
+                        log.debug("🔄 Verifying transaction by txRef: {}", txRef);
+                        TransactionResponse result = verifyAndProcessTransaction(txRef, user);
+                        if (result != null && "COMPLETED".equalsIgnoreCase(result.getStatus())) {
+                            verifiedByPattern++;
+                            log.info("✅ Successfully verified transaction: txRef={}, amount={}", 
+                                    txRef, result.getAmount());
+                            
+                            // Add to flutterwaveTransactions list so it gets processed
+                            flutterwaveTransactions.add(FlutterwaveService.TransactionVerification.builder()
+                                    .txRef(txRef)
+                                    .flwRef(result.getFlwRef())
+                                    .status("successful")
+                                    .amount(result.getAmount())
+                                    .currency(result.getCurrency())
+                                    .customerEmail(normalizedEmail)
+                                    .message("Verified by individual txRef check")
+                                    .build());
+                        } else {
+                            failedByPattern++;
+                            log.debug("Transaction {} not completed in Flutterwave: status={}", txRef, 
+                                    result != null ? result.getStatus() : "null");
+                        }
+                    } catch (Exception e) {
+                        failedByPattern++;
+                        log.debug("Transaction {} not found or failed in Flutterwave: {}", txRef, e.getMessage());
+                        // Continue trying other patterns
+                    }
+                }
+                
+                if (verifiedByPattern > 0) {
+                    log.info("✅ Verified {} additional transactions by individual txRef verification ({} already in list, {} failed, {} total checked)", 
+                            verifiedByPattern, alreadyCompleted, failedByPattern, txRefsToTry.size());
+                    // Refresh wallet after verification
+                    wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
+                } else if (txRefsToTry.size() > 0) {
+                    log.info("ℹ️ Checked {} transaction references: {} already in Flutterwave list, {} not found/failed", 
+                            txRefsToTry.size(), alreadyCompleted, failedByPattern);
+                }
             }
             
-            // Process each transaction from Flutterwave
+            // Process each transaction from Flutterwave (including newly verified ones)
             for (FlutterwaveService.TransactionVerification verification : flutterwaveTransactions) {
                 if (verification.getTxRef() == null || verification.getTxRef().isEmpty()) {
                     log.warn("Skipping transaction with null or empty txRef: flwRef={}", verification.getFlwRef());
@@ -1035,59 +1118,6 @@ public class WalletServiceImpl implements WalletService {
                     log.warn("Failed to process transaction {} from Flutterwave: {}", 
                             verification.getTxRef(), e.getMessage());
                     // Continue with other transactions
-                }
-            }
-            
-            // If email-based fetching returned 0 transactions, try to verify transactions by common patterns
-            // This handles cases where transactions exist in Flutterwave but weren't fetched by email
-            if (flutterwaveTransactions.isEmpty() && normalizedEmail != null) {
-                log.info("🔄 Email-based fetching returned 0 transactions. Attempting to verify transactions by common txRef patterns...");
-                
-                // Try common txRef patterns that might exist in Flutterwave
-                // Pattern 1: wallet_topup_{email}_{timestamp}
-                // Pattern 2: {email}_{timestamp}_listing_{listingId}_{random}
-                // We'll try to verify these patterns by checking if they exist in Flutterwave
-                
-                // Get all transactions from database to extract potential patterns
-                java.util.List<Transaction> allUserTransactions = transactionRepository.findByWalletIdOrderByCreatedAtDesc(
-                        wallet.getId(), org.springframework.data.domain.PageRequest.of(0, 100))
-                        .getContent();
-                
-                // Try to verify transactions that might exist but weren't fetched
-                // Check if there are any transaction references that match common patterns
-                java.util.Set<String> txRefsToTry = new java.util.HashSet<>();
-                
-                // Add any pending transactions' txRefs
-                java.util.List<Transaction> pendingTransactions = transactionRepository.findByWalletIdAndStatus(
-                        wallet.getId(), Transaction.Status.PENDING);
-                for (Transaction txn : pendingTransactions) {
-                    if (txn.getFlutterwaveTxRef() != null && !txn.getFlutterwaveTxRef().isEmpty()) {
-                        txRefsToTry.add(txn.getFlutterwaveTxRef());
-                    } else if (txn.getReference() != null && !txn.getReference().isEmpty()) {
-                        txRefsToTry.add(txn.getReference());
-                    }
-                }
-                
-                // Try to verify each potential txRef
-                int verifiedByPattern = 0;
-                for (String txRef : txRefsToTry) {
-                    try {
-                        log.info("🔄 Attempting to verify transaction by txRef pattern: {}", txRef);
-                        TransactionResponse result = verifyAndProcessTransaction(txRef, user);
-                        if (result != null && "COMPLETED".equalsIgnoreCase(result.getStatus())) {
-                            verifiedByPattern++;
-                            log.info("✅ Successfully verified transaction by txRef pattern: {}", txRef);
-                        }
-                    } catch (Exception e) {
-                        log.debug("Transaction {} not found or not successful in Flutterwave: {}", txRef, e.getMessage());
-                        // Continue trying other patterns
-                    }
-                }
-                
-                if (verifiedByPattern > 0) {
-                    log.info("✅ Verified {} transactions by txRef patterns", verifiedByPattern);
-                    // Refresh wallet after verification
-                    wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
                 }
             }
             

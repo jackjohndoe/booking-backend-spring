@@ -626,9 +626,9 @@ public class FlutterwaveService {
             
             // Try multiple approaches to fetch all transactions
             // 1. First try without date filter to get ALL transactions (Flutterwave may not require dates)
-            // 2. If that fails or returns empty, try with extended date range (last 2 years)
+            // 2. If that fails or returns empty, try with extended date range (last 10 years to catch all historical transactions)
             java.time.LocalDate endDate = java.time.LocalDate.now();
-            java.time.LocalDate startDate = endDate.minusYears(2); // Extended to 2 years to catch older transactions
+            java.time.LocalDate startDate = endDate.minusYears(10); // Extended to 10 years to catch ALL historical transactions
             
             // Try fetching without date filter first (some Flutterwave accounts may support this)
             java.util.List<TransactionVerification> transactionsWithoutDate = new java.util.ArrayList<>();
@@ -689,12 +689,13 @@ public class FlutterwaveService {
             url += "&from=" + startDate.toString() + "&to=" + endDate.toString();
             url += "&page=1"; // Start with page 1
             
-            log.info("Fetching Flutterwave transactions with date range: {} to {} (2 years)", startDate, endDate);
+            log.info("Fetching Flutterwave transactions with date range: {} to {} (10 years to get ALL historical transactions)", startDate, endDate);
             
-            // Fetch all pages of transactions
+            // Fetch all pages of transactions - increase limit to get ALL transactions
             int currentPage = 1;
-            int maxPages = 20; // Increased limit to fetch more pages
+            int maxPages = 100; // Increased limit significantly to fetch ALL pages of transactions
             boolean hasMorePages = true;
+            int totalPagesFetched = 0;
             
             while (hasMorePages && currentPage <= maxPages) {
                 String pageUrl = TRANSACTIONS_URL + "?customer_email=" + java.net.URLEncoder.encode(customerEmail, "UTF-8");
@@ -765,14 +766,27 @@ public class FlutterwaveService {
                         }
                     }
                     
-                    log.debug("Page {}: Found {} successful transactions (total so far: {})", 
+                    log.info("Page {}: Found {} successful transactions (total so far: {})", 
                             currentPage, pageTransactions, allTransactions.size());
+                    totalPagesFetched = currentPage;
                     
-                    // Check if there are more pages (if current page has fewer than expected, assume no more pages)
-                    if (flutterwaveResponse.getData().size() < 20) { // Assuming 20 per page
+                    // Check if there are more pages
+                    // Flutterwave typically returns 20-50 transactions per page
+                    // If we got fewer than expected, check if there's a next page indicator
+                    int pageSize = flutterwaveResponse.getData().size();
+                    if (pageSize == 0) {
+                        // No more transactions on this page
+                        hasMorePages = false;
+                    } else if (pageSize < 20) {
+                        // Likely the last page (less than typical page size)
                         hasMorePages = false;
                     } else {
+                        // Might have more pages, continue
                         currentPage++;
+                        // Add a small delay to avoid rate limiting
+                        if (currentPage % 10 == 0) {
+                            Thread.sleep(500); // Small delay every 10 pages
+                        }
                     }
                 } else {
                     // No more data or error
@@ -805,7 +819,14 @@ public class FlutterwaveService {
             java.util.List<TransactionVerification> finalTransactions = new java.util.ArrayList<>(uniqueTransactions.values());
             
             log.info("✅ Fetched {} total unique successful transactions from Flutterwave for email: {} ({} without date filter, {} with date filter, searched {} pages)", 
-                    finalTransactions.size(), customerEmail, transactionsWithoutDate.size(), allTransactions.size(), currentPage - 1);
+                    finalTransactions.size(), customerEmail, transactionsWithoutDate.size(), allTransactions.size(), totalPagesFetched);
+            
+            // If we still have very few transactions but user has made payments, log a warning
+            if (finalTransactions.size() == 0) {
+                log.warn("⚠️ No transactions found for email: {}. This may indicate: 1) No transactions exist, 2) Email mismatch, 3) Transactions exist but weren't fetched by email query.", customerEmail);
+            } else if (finalTransactions.size() < 5) {
+                log.warn("⚠️ Only {} transactions found for email: {}. If user has made more payments, they may not be associated with this email in Flutterwave.", finalTransactions.size(), customerEmail);
+            }
             
             // Log transaction references for debugging
             if (!finalTransactions.isEmpty()) {
