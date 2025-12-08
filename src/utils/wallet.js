@@ -5,7 +5,7 @@
 // - NO wallet data is shared between users - each account is completely separate
 // - Wallet operations (fund, payment, withdraw) only affect the specific user's wallet
 // - Money can only appear in another user's wallet via sendMoneyToUser function
-// - New users start with zero balance unless they claim the welcome bonus
+// - New users start with zero balance
 // - Transaction history is unique to each user account
 // - Balance validation: Maximum balance is ₦10,000,000 to prevent data corruption
 // - Corrupted balances (NaN, negative, or > 10M) are automatically reset to 0
@@ -336,13 +336,33 @@ export const getTransactions = async (userEmail) => {
     
     // CRITICAL: Filter transactions to ensure ONLY this user's transactions are returned
     // This prevents any cross-user data leakage
-    // Also filter out Welcome Bonus Voucher transactions
+    // Also PERMANENTLY remove Welcome Bonus Voucher transactions
     const userTransactions = transactions.filter(txn => {
-      // Filter out Welcome Bonus Voucher transactions
+      // PERMANENTLY remove Welcome Bonus Voucher transactions
       const description = (txn.description || '').toLowerCase();
       if (description.includes('welcome bonus') || description.includes('welcome bonus voucher')) {
-        console.log(`ℹ️ Filtering out Welcome Bonus Voucher transaction: ${txn.id || txn.reference || 'unknown'}`);
+        console.log(`🗑️ Removing Welcome Bonus Voucher transaction: ${txn.id || txn.reference || 'unknown'}`);
         return false;
+      }
+      
+      // Only allow valid transaction types: Flutterwave funding, withdrawals, payments
+      // Filter out any transactions that don't have proper Flutterwave references or aren't valid wallet operations
+      const validTypes = ['deposit', 'top_up', 'withdrawal', 'payment', 'transfer_in', 'transfer_out'];
+      const txnType = (txn.type || '').toLowerCase();
+      
+      // If transaction has a Flutterwave reference, it's valid
+      const hasFlutterwaveRef = !!(txn.flutterwaveTxRef || 
+        (txn.reference && (txn.reference.includes('@') || txn.reference.includes('wallet_topup') || txn.reference.includes('listing'))) ||
+        (txn.paymentReference && (txn.paymentReference.includes('@') || txn.paymentReference.includes('wallet_topup') || txn.paymentReference.includes('listing'))));
+      
+      // If transaction is a valid type OR has Flutterwave reference, keep it
+      if (!validTypes.includes(txnType) && !hasFlutterwaveRef) {
+        // Check if it's a booking payment (should have bookingPayment flag or propertyTitle)
+        const isBookingPayment = txn.bookingPayment || txn.propertyTitle;
+        if (!isBookingPayment) {
+          console.log(`🗑️ Removing invalid transaction (not Flutterwave/wallet operation): ${txn.id || txn.reference || 'unknown'}`);
+          return false;
+        }
       }
       
       // If transaction has userEmail, verify it matches exactly
@@ -358,10 +378,30 @@ export const getTransactions = async (userEmail) => {
       return true;
     });
     
-    // If we filtered out any transactions, update storage to remove them
+    // If we filtered out any transactions, PERMANENTLY remove them from storage
     if (userTransactions.length !== transactions.length) {
-      console.warn(`⚠️ Filtered out ${transactions.length - userTransactions.length} transactions not belonging to ${normalizedEmail}`);
+      const removedCount = transactions.length - userTransactions.length;
+      console.log(`🗑️ Permanently removed ${removedCount} invalid/Welcome Bonus transactions from storage`);
       await AsyncStorage.setItem(key, JSON.stringify(userTransactions));
+      
+      // Recalculate balance after removing Welcome Bonus transactions
+      const currentBalance = await getWalletBalance(normalizedEmail);
+      const calculatedBalance = userTransactions.reduce((total, txn) => {
+        const amount = parseFloat(txn.amount || 0);
+        const type = (txn.type || '').toLowerCase();
+        if (type === 'deposit' || type === 'top_up' || type === 'transfer_in') {
+          return total + amount;
+        } else if (type === 'withdrawal' || type === 'payment' || type === 'transfer_out') {
+          return total - amount;
+        }
+        return total;
+      }, 0);
+      
+      // Update balance if it changed
+      if (Math.abs(currentBalance - calculatedBalance) > 0.01) {
+        console.log(`🔄 Updating balance after removing Welcome Bonus: ₦${currentBalance.toLocaleString()} → ₦${Math.floor(calculatedBalance).toLocaleString()}`);
+        await updateWalletBalance(normalizedEmail, Math.floor(calculatedBalance));
+      }
     }
     
     // Return ONLY this user's transactions

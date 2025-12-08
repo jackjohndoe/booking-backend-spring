@@ -115,10 +115,35 @@ export default function WalletScreen() {
       // Filter out Welcome Bonus Voucher transactions
       const sortedTransactions = Array.isArray(walletTransactions) 
         ? (() => {
-            // First, filter out Welcome Bonus Voucher transactions
+            // First, filter out Welcome Bonus Voucher transactions and invalid transactions
+            // Only show Flutterwave transactions (funding, withdrawals, payments)
             const filteredTransactions = walletTransactions.filter(txn => {
               const description = (txn.description || '').toLowerCase();
-              return !description.includes('welcome bonus') && !description.includes('welcome bonus voucher');
+              
+              // Remove Welcome Bonus Voucher transactions
+              if (description.includes('welcome bonus') || description.includes('welcome bonus voucher')) {
+                return false;
+              }
+              
+              // Only allow valid transaction types: Flutterwave funding, withdrawals, payments
+              const validTypes = ['deposit', 'top_up', 'withdrawal', 'payment', 'transfer_in', 'transfer_out'];
+              const txnType = (txn.type || '').toLowerCase();
+              
+              // If transaction has a Flutterwave reference, it's valid
+              const hasFlutterwaveRef = !!(txn.flutterwaveTxRef || 
+                (txn.reference && (txn.reference.includes('@') || txn.reference.includes('wallet_topup') || txn.reference.includes('listing'))) ||
+                (txn.paymentReference && (txn.paymentReference.includes('@') || txn.paymentReference.includes('wallet_topup') || txn.paymentReference.includes('listing'))));
+              
+              // If transaction is a valid type OR has Flutterwave reference, keep it
+              if (!validTypes.includes(txnType) && !hasFlutterwaveRef) {
+                // Check if it's a booking payment (should have bookingPayment flag or propertyTitle)
+                const isBookingPayment = txn.bookingPayment || txn.propertyTitle;
+                if (!isBookingPayment) {
+                  return false; // Remove invalid transactions
+                }
+              }
+              
+              return true;
             });
             
             // Then, ensure all transactions have proper references

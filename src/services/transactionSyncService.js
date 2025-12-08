@@ -16,8 +16,29 @@ export const calculateBalanceFromTransactions = (transactions) => {
 
   let balance = 0;
   transactions.forEach(txn => {
+    // Skip Welcome Bonus Voucher transactions
+    const description = (txn.description || '').toLowerCase();
+    if (description.includes('welcome bonus') || description.includes('welcome bonus voucher')) {
+      return; // Skip this transaction
+    }
+    
     const amount = parseFloat(txn.amount || 0);
     const type = txn.type || txn.transactionType || '';
+    
+    // Only count valid Flutterwave/wallet transactions
+    // Valid types: deposit, top_up, withdrawal, payment, transfer_in, transfer_out
+    const validTypes = ['deposit', 'top_up', 'withdrawal', 'payment', 'transfer_in', 'transfer_out'];
+    if (!validTypes.includes(type.toLowerCase())) {
+      // Check if it has Flutterwave reference or is a booking payment
+      const hasFlutterwaveRef = !!(txn.flutterwaveTxRef || 
+        (txn.reference && (txn.reference.includes('@') || txn.reference.includes('wallet_topup') || txn.reference.includes('listing'))) ||
+        (txn.paymentReference && (txn.paymentReference.includes('@') || txn.paymentReference.includes('wallet_topup') || txn.paymentReference.includes('listing'))));
+      const isBookingPayment = txn.bookingPayment || txn.propertyTitle;
+      
+      if (!hasFlutterwaveRef && !isBookingPayment) {
+        return; // Skip invalid transactions
+      }
+    }
     
     if (type === 'deposit' || type === 'top_up' || type === 'transfer_in') {
       balance += amount;
@@ -42,7 +63,14 @@ export const mergeTransactions = (apiTransactions = [], localTransactions = []) 
   const processedKeys = new Set(); // Track which transactions we've already processed
   
   // First, add local transactions (older data, may have more details)
+  // Filter out Welcome Bonus Voucher transactions
   localTransactions.forEach(txn => {
+    // Skip Welcome Bonus Voucher transactions
+    const description = (txn.description || '').toLowerCase();
+    if (description.includes('welcome bonus') || description.includes('welcome bonus voucher')) {
+      return; // Skip this transaction
+    }
+    
     // Try multiple keys for matching
     const keys = [
       txn.reference,
@@ -67,7 +95,14 @@ export const mergeTransactions = (apiTransactions = [], localTransactions = []) 
   });
   
   // Then, add/update with API transactions (prefer API data as it's more authoritative)
+  // Filter out Welcome Bonus Voucher transactions
   apiTransactions.forEach(txn => {
+    // Skip Welcome Bonus Voucher transactions
+    const description = (txn.description || txn.narration || '').toLowerCase();
+    if (description.includes('welcome bonus') || description.includes('welcome bonus voucher')) {
+      return; // Skip this transaction
+    }
+    
     // Try multiple keys for matching
     const keys = [
       txn.reference,
@@ -188,8 +223,16 @@ export const syncTransactionsToLocal = async (userEmail, apiTransactions = []) =
     );
 
     // Sync each API transaction to local storage
+    // Only sync valid Flutterwave transactions (funding, withdrawals, payments)
     for (const apiTxn of apiTransactions) {
       const ref = apiTxn.reference || apiTxn.id || apiTxn.paymentReference;
+      
+      // Skip Welcome Bonus Voucher transactions
+      const description = (apiTxn.description || apiTxn.narration || '').toLowerCase();
+      if (description.includes('welcome bonus') || description.includes('welcome bonus voucher')) {
+        console.log(`🗑️ Skipping Welcome Bonus Voucher transaction from API: ${ref || 'unknown'}`);
+        continue;
+      }
       
       // Skip if already exists locally
       if (ref && localRefs.has(ref)) {
@@ -222,7 +265,7 @@ export const syncTransactionsToLocal = async (userEmail, apiTransactions = []) =
 
         await addTransaction(normalizedEmail, localTxn);
         syncedCount++;
-        console.log(`✅ Synced transaction to local: ${ref} - ₦${localTxn.amount.toLocaleString()}`);
+        console.log(`✅ Synced Flutterwave transaction to local: ${ref} - ₦${localTxn.amount.toLocaleString()}`);
       } catch (txnError) {
         console.error(`Error syncing transaction ${ref}:`, txnError);
         // Continue with other transactions
