@@ -36,13 +36,16 @@ public class PaymentController {
     private final PaymentProvider paymentProvider;
     private final FlutterwaveService flutterwaveService;
     private final UserRepository userRepository;
+    private final com.example.booking.service.WalletService walletService;
 
     public PaymentController(PaymentService paymentService, PaymentProvider paymentProvider, 
-                            FlutterwaveService flutterwaveService, UserRepository userRepository) {
+                            FlutterwaveService flutterwaveService, UserRepository userRepository,
+                            com.example.booking.service.WalletService walletService) {
         this.paymentService = paymentService;
         this.paymentProvider = paymentProvider;
         this.flutterwaveService = flutterwaveService;
         this.userRepository = userRepository;
+        this.walletService = walletService;
     }
 
     @Operation(summary = "Process booking payment", 
@@ -337,9 +340,46 @@ public class PaymentController {
             // Process webhook via FlutterwaveService with hash verification
             FlutterwaveService.WebhookResult result = flutterwaveService.handleWebhook(webhookPayload, headers);
             
+            // Extract event type from webhook payload
+            String event = (String) webhookPayload.get("event");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> data = (Map<String, Object>) webhookPayload.get("data");
+            
+            // Extract customer email from webhook payload
+            String customerEmail = null;
+            if (data != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> customer = (Map<String, Object>) data.get("customer");
+                if (customer != null) {
+                    customerEmail = (String) customer.get("email");
+                }
+                // Fallback: try to get email directly from data
+                if (customerEmail == null) {
+                    customerEmail = (String) data.get("customer_email");
+                }
+            }
+            
+            // Process wallet updates for charge.completed and transfer.completed events
+            if (result.getTxRef() != null && result.getAmount() != null && result.getStatus() != null) {
+                if ("charge.completed".equals(event) || "transfer.completed".equals(event)) {
+                    try {
+                        walletService.processFlutterwaveWebhook(
+                                event,
+                                result.getTxRef(),
+                                result.getFlwRef(),
+                                result.getAmount(),
+                                result.getStatus(),
+                                customerEmail
+                        );
+                    } catch (Exception walletError) {
+                        // Log error but don't fail webhook - Flutterwave needs 200 response
+                        System.err.println("Error processing wallet webhook: " + walletError.getMessage());
+                        walletError.printStackTrace();
+                    }
+                }
+            }
+            
             if (result.isSuccess()) {
-                // TODO: Update booking status and fund host wallet based on tx_ref
-                // For now, just return success with transaction references
                 Map<String, Object> response = new java.util.HashMap<>();
                 response.put("status", "success");
                 response.put("message", result.getMessage() != null ? result.getMessage() : "Webhook processed successfully");
