@@ -503,12 +503,15 @@ public class WalletServiceImpl implements WalletService {
                 }
             }
 
+            // Create final reference for lambda expression
+            final User finalUser = user;
+
             // Get or create wallet for user
             if (wallet == null) {
-                wallet = walletRepository.findByUserId(user.getId())
+                wallet = walletRepository.findByUserId(finalUser.getId())
                         .orElseGet(() -> {
                             Wallet newWallet = Wallet.builder()
-                                    .user(user)
+                                    .user(finalUser)
                                     .balance(BigDecimal.ZERO)
                                     .currency("NGN")
                                     .status(Wallet.Status.ACTIVE)
