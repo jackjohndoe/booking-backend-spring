@@ -1075,27 +1075,45 @@ public class WalletServiceImpl implements WalletService {
                                 }
                                 
                                 log.info("🔄 Verifying known/potential missing transaction: {}", patternTxRef);
-                                TransactionResponse result = verifyAndProcessTransaction(patternTxRef, user);
-                                if (result != null && "COMPLETED".equalsIgnoreCase(result.getStatus())) {
-                                    verifiedByPatternCheck++;
-                                    log.info("✅ Successfully verified missing transaction: txRef={}, amount={}", 
-                                            patternTxRef, result.getAmount());
+                                // First verify with Flutterwave to get full details including flwRef
+                                FlutterwaveService.TransactionVerification verification = flutterwaveService.verifyTransaction(patternTxRef);
+                                if (verification != null && verification.getStatus() != null) {
+                                    boolean isSuccessful = "successful".equalsIgnoreCase(verification.getStatus()) || 
+                                                          "SUCCESSFUL".equalsIgnoreCase(verification.getStatus()) ||
+                                                          "completed".equalsIgnoreCase(verification.getStatus()) ||
+                                                          "COMPLETED".equalsIgnoreCase(verification.getStatus());
                                     
-                                    // Add to flutterwaveTransactions list so it gets processed
-                                    flutterwaveTransactions.add(FlutterwaveService.TransactionVerification.builder()
-                                            .txRef(patternTxRef)
-                                            .flwRef(result.getFlwRef())
-                                            .status("successful")
-                                            .amount(result.getAmount())
-                                            .currency(result.getCurrency())
-                                            .customerEmail(normalizedEmail)
-                                            .message("Verified by missing transaction check (was missing from database)")
-                                            .build());
+                                    if (isSuccessful) {
+                                        // Process the transaction
+                                        TransactionResponse result = verifyAndProcessTransaction(patternTxRef, user);
+                                        if (result != null && "COMPLETED".equalsIgnoreCase(result.getStatus())) {
+                                            verifiedByPatternCheck++;
+                                            log.info("✅ Successfully verified missing transaction: txRef={}, amount={}", 
+                                                    patternTxRef, result.getAmount());
+                                            
+                                            // Add to flutterwaveTransactions list so it gets processed
+                                            flutterwaveTransactions.add(FlutterwaveService.TransactionVerification.builder()
+                                                    .txRef(patternTxRef)
+                                                    .flwRef(verification.getFlwRef()) // Use flwRef from verification
+                                                    .status("successful")
+                                                    .amount(verification.getAmount())
+                                                    .currency(verification.getCurrency())
+                                                    .customerEmail(normalizedEmail)
+                                                    .message("Verified by missing transaction check (was missing from database)")
+                                                    .build());
+                                        }
+                                    } else {
+                                        failedByPatternCheck++;
+                                        // Only log failures for hardcoded transactions (not pattern-generated ones)
+                                        if (hardcodedMissingTxRefs.contains(patternTxRef)) {
+                                            log.warn("⚠️ Known missing transaction {} not completed in Flutterwave: status={}", patternTxRef, verification.getStatus());
+                                        }
+                                    }
                                 } else {
                                     failedByPatternCheck++;
-                                    // Only log failures for hardcoded transactions (not pattern-generated ones)
+                                    // Only log failures for hardcoded transactions
                                     if (hardcodedMissingTxRefs.contains(patternTxRef)) {
-                                        log.warn("⚠️ Known missing transaction {} not found or not completed in Flutterwave", patternTxRef);
+                                        log.warn("⚠️ Known missing transaction {} verification returned null", patternTxRef);
                                     }
                                 }
                             } catch (Exception e) {
