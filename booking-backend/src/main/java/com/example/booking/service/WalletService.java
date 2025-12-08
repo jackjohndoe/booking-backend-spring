@@ -20,7 +20,7 @@ public interface WalletService {
     void processEscrowRelease(Long bookingId, User host);
     void processRefund(Long bookingId, String reason);
     TransactionResponse requestPayout(WithdrawalRequest request, User user);
-    void processFlutterwaveWebhook(String event, String txRef, String flwRef, BigDecimal amount, String status);
+    void processFlutterwaveWebhook(String event, String txRef, String flwRef, BigDecimal amount, String status, String customerEmail);
     void syncBalanceWithFlutterwave(User user);
     TransactionResponse verifyAndProcessTransaction(String txRef, User user);
     void syncAllTransactionsFromFlutterwave(User user);

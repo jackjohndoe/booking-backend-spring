@@ -1,12 +1,24 @@
 // API Base Configuration
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_CONFIG } from '../config/api';
+import { handleTokenExpiration } from '../utils/tokenExpirationHandler';
+import { refreshToken, getValidToken } from '../utils/tokenRefresh';
 
 const BASE_URL = API_CONFIG.BASE_URL;
 
 // Helper function to get auth token
-const getAuthToken = async () => {
+// Now checks if token is expired and attempts refresh before returning
+const getAuthToken = async (skipRefresh = false) => {
   try {
+    // If skipRefresh is false, check token validity and refresh if needed
+    if (!skipRefresh) {
+      const validToken = await getValidToken();
+      if (validToken) {
+        return validToken;
+      }
+    }
+
+    // Fallback to direct token retrieval
     const userData = await AsyncStorage.getItem('user');
     if (userData) {
       const user = JSON.parse(userData);
@@ -26,10 +38,12 @@ const getAuthToken = async () => {
 };
 
 // Base API request function
-const apiRequest = async (endpoint, options = {}) => {
+const apiRequest = async (endpoint, options = {}, retryCount = 0) => {
   const isAuthEndpoint = endpoint.includes('/auth/login') || endpoint.includes('/auth/register');
   const isPaymentEndpoint = endpoint.includes('/payments/');
+  const isWalletEndpoint = endpoint.includes('/wallet/');
   
+  // Get token (with automatic refresh check)
   const token = await getAuthToken();
   
   // Debug logging for payment endpoints
@@ -279,8 +293,8 @@ const apiRequest = async (endpoint, options = {}) => {
         return null;
       }
       
-      // For payment endpoints, throw errors so they can be handled properly
-      if (isPaymentEndpoint) {
+      // For payment and wallet endpoints, throw errors so they can be handled properly
+      if (isPaymentEndpoint || isWalletEndpoint) {
         // Use actual HTTP status code, not error message
         const httpStatus = response.status;
         let errorMessage = '';
@@ -288,7 +302,7 @@ const apiRequest = async (endpoint, options = {}) => {
         // If response has no body or empty body
         if (!data || data === '[no body]' || (typeof data === 'string' && data.trim() === '')) {
           if (httpStatus === 401) {
-            errorMessage = 'Authentication failed. Your session may have expired. Please sign out and sign in again.';
+            errorMessage = 'Authentication failed. Your session may have expired. You can continue using the app, but some features may not work until you sign out and sign in again.';
           } else if (httpStatus === 403) {
             errorMessage = 'Access denied. You do not have permission to perform this action.';
           } else if (httpStatus === 500) {
@@ -312,8 +326,46 @@ const apiRequest = async (endpoint, options = {}) => {
               `Backend error (500): ${extractedMsg}. Check Railway backend logs and ensure Flutterwave environment variables are set.` :
               'Server error (500). Backend may not have Flutterwave credentials configured. Check Railway environment variables: FLUTTERWAVE_CLIENT_ID, FLUTTERWAVE_CLIENT_SECRET, FLUTTERWAVE_ENCRYPTION_KEY';
           } else if (httpStatus === 401 || httpStatus === 403) {
+            // For 401 errors, try to refresh token and retry the request
+            if (httpStatus === 401 && retryCount === 0 && !isAuthEndpoint) {
+              console.log('🔄 401 error detected, attempting token refresh and retry...');
+              try {
+                const newToken = await refreshToken();
+                if (newToken) {
+                  console.log('✅ Token refreshed, retrying request...');
+                  // Update token in options and retry
+                  const updatedOptions = {
+                    ...options,
+                    headers: {
+                      ...options.headers,
+                      'Authorization': `Bearer ${newToken}`,
+                    },
+                  };
+                  // Retry the request once with new token
+                  return apiRequest(endpoint, updatedOptions, retryCount + 1);
+                }
+              } catch (refreshError) {
+                console.warn('⚠️ Token refresh failed:', refreshError);
+                // Continue with normal error handling
+              }
+            }
+            
             // For auth errors, use extracted message or default
-            errorMessage = extractedMsg || 'Authentication failed. Please sign out and sign in again.';
+            errorMessage = extractedMsg || 'Authentication failed. You can continue using the app, but some features may not work until you sign out and sign in again.';
+            
+            // Handle token expiration gracefully WITHOUT logging out
+            // User stays logged in and can continue using the app
+            if (httpStatus === 401 && retryCount > 0) {
+              // Already tried refresh, handle expiration gracefully
+              handleTokenExpiration(errorMessage).catch(err => {
+                console.error('Error in token expiration handler:', err);
+              });
+            } else if (httpStatus === 401 && retryCount === 0) {
+              // First attempt - refresh failed or not possible, handle gracefully
+              handleTokenExpiration(errorMessage).catch(err => {
+                console.error('Error in token expiration handler:', err);
+              });
+            }
           } else {
             errorMessage = extractedMsg || JSON.stringify(data);
           }
@@ -325,7 +377,39 @@ const apiRequest = async (endpoint, options = {}) => {
             if (!token) {
               errorMessage = 'You must be logged in to create a virtual account. Please sign in first.';
             } else {
-              errorMessage = 'Your session has expired. Please sign out and sign in again to refresh your authentication token.';
+              errorMessage = 'Your session has expired. You can continue using the app, but some features may not work until you sign out and sign in again.';
+              
+              // For 401 errors, try to refresh token and retry the request
+              if (httpStatus === 401 && retryCount === 0 && !isAuthEndpoint) {
+                console.log('🔄 401 error detected, attempting token refresh and retry...');
+                try {
+                  const newToken = await refreshToken();
+                  if (newToken) {
+                    console.log('✅ Token refreshed, retrying request...');
+                    // Update token in options and retry
+                    const updatedOptions = {
+                      ...options,
+                      headers: {
+                        ...options.headers,
+                        'Authorization': `Bearer ${newToken}`,
+                      },
+                    };
+                    // Retry the request once with new token
+                    return apiRequest(endpoint, updatedOptions, retryCount + 1);
+                  }
+                } catch (refreshError) {
+                  console.warn('⚠️ Token refresh failed:', refreshError);
+                  // Continue with normal error handling
+                }
+              }
+              
+              // Handle token expiration gracefully WITHOUT logging out
+              // User stays logged in and can continue using the app
+              if (httpStatus === 401) {
+                handleTokenExpiration(errorMessage).catch(err => {
+                  console.error('Error in token expiration handler:', err);
+                });
+              }
             }
           } else if (httpStatus === 500) {
             errorMessage = 'Server error (500). The backend may not have Flutterwave credentials configured in Railway. Please check Railway environment variables and backend logs.';
@@ -345,7 +429,8 @@ const apiRequest = async (endpoint, options = {}) => {
           tokenLength: token ? token.length : 0,
           responseHeaders: Object.fromEntries(response.headers.entries())
         };
-        console.error('❌ Payment endpoint error:');
+        const endpointType = isPaymentEndpoint ? 'Payment' : (isWalletEndpoint ? 'Wallet' : 'API');
+        console.error(`❌ ${endpointType} endpoint error:`);
         console.error(JSON.stringify(errorDetails, null, 2));
         console.error('Full error object:', errorDetails);
         
@@ -387,10 +472,26 @@ const apiRequest = async (endpoint, options = {}) => {
     }
     
     // For auth and payment endpoints, throw network errors so users get feedback
-    if (isAuthEndpoint || isPaymentEndpoint) {
-      const networkError = new Error('Network error. Please check your connection and try again.');
-      networkError.status = 0; // Indicate network error
-      throw networkError;
+    if (isAuthEndpoint || isPaymentEndpoint || isWalletEndpoint) {
+      // Check if it's a network error or timeout
+      const isNetworkError = !error.status || error.status === 0 || 
+                            error.message?.includes('network') || 
+                            error.message?.includes('timeout') ||
+                            error.message?.includes('fetch') ||
+                            error.message?.includes('Failed to fetch');
+      
+      if (isNetworkError) {
+        const networkError = new Error('Network error. Please check your connection and try again.');
+        networkError.status = 0; // Indicate network error
+        networkError.isNetworkError = true;
+        throw networkError;
+      }
+      
+      // For other errors, provide more context
+      const apiError = new Error(error.message || 'API request failed. Please try again.');
+      apiError.status = error.status || 0;
+      apiError.originalError = error;
+      throw apiError;
     }
     
     // Network errors, timeouts, etc. - return null to preserve frontend for non-auth endpoints

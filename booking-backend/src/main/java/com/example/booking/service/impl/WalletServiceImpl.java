@@ -17,6 +17,7 @@ import com.example.booking.payment.dto.PaymentIntentResponse;
 import com.example.booking.payment.dto.PayoutRequest;
 import com.example.booking.repository.BookingRepository;
 import com.example.booking.repository.TransactionRepository;
+import com.example.booking.repository.UserRepository;
 import com.example.booking.repository.WalletRepository;
 import com.example.booking.service.WalletService;
 import org.springframework.stereotype.Service;
@@ -35,17 +36,20 @@ public class WalletServiceImpl implements WalletService {
     private final WalletRepository walletRepository;
     private final TransactionRepository transactionRepository;
     private final BookingRepository bookingRepository;
+    private final UserRepository userRepository;
     private final PaymentProvider paymentProvider;
     private final FlutterwaveService flutterwaveService;
 
     public WalletServiceImpl(WalletRepository walletRepository,
                              TransactionRepository transactionRepository,
                              BookingRepository bookingRepository,
+                             UserRepository userRepository,
                              PaymentProvider paymentProvider,
                              FlutterwaveService flutterwaveService) {
         this.walletRepository = walletRepository;
         this.transactionRepository = transactionRepository;
         this.bookingRepository = bookingRepository;
+        this.userRepository = userRepository;
         this.paymentProvider = paymentProvider;
         this.flutterwaveService = flutterwaveService;
     }
@@ -190,6 +194,9 @@ public class WalletServiceImpl implements WalletService {
             );
 
             // Create transaction with processing status - will be confirmed by webhook
+            // CRITICAL: Ensure transaction has proper reference in all fields for reliable tracking
+            String transferId = transferResponse.getTransferId();
+            
             Transaction transaction = Transaction.builder()
                     .wallet(wallet)
                     .user(user)
@@ -198,9 +205,11 @@ public class WalletServiceImpl implements WalletService {
                     .amount(request.getAmount())
                     .currency("NGN")
                     .description(request.getDescription())
-                    .flutterwaveTransferId(transferResponse.getTransferId())
+                    // Store reference in multiple fields for reliable matching
+                    .reference(reference) // Primary reference field
+                    .flutterwaveTransferId(transferId) // Flutterwave transfer ID
                     .flutterwaveStatus(transferResponse.getStatus())
-                    .reference(reference)
+                    .createdAt(java.time.OffsetDateTime.now())
                     .build();
 
             // Create transaction first, then recalculate balance from all transactions
@@ -399,44 +408,141 @@ public class WalletServiceImpl implements WalletService {
     }
 
     @Override
-    public void processFlutterwaveWebhook(String event, String txRef, String flwRef, BigDecimal amount, String status) {
-        log.info("Processing Flutterwave webhook: event={}, txRef={}, flwRef={}, amount={}, status={}", 
-                event, txRef, flwRef, amount, status);
+    public void processFlutterwaveWebhook(String event, String txRef, String flwRef, BigDecimal amount, String status, String customerEmail) {
+        log.info("Processing Flutterwave webhook: event={}, txRef={}, flwRef={}, amount={}, status={}, customerEmail={}", 
+                event, txRef, flwRef, amount, status, customerEmail);
 
         try {
             // Find transaction by Flutterwave reference
             Transaction transaction = transactionRepository.findByFlutterwaveTxRef(txRef)
                     .orElseGet(() -> transactionRepository.findByFlutterwaveFlwRef(flwRef).orElse(null));
 
-            // If transaction doesn't exist, create it from webhook data
-            // This ensures payments are recorded even if transaction wasn't pre-created
-            if (transaction == null) {
-                log.info("No transaction found for Flutterwave reference: txRef={}, flwRef={}. " +
-                        "Creating new transaction from webhook data.", txRef, flwRef);
-                
-                // Get user from email in webhook (if available) or find by transaction reference pattern
-                // For now, we'll try to find wallet by checking if txRef contains user identifier
-                // If we can't determine user, we'll need to verify transaction with Flutterwave to get user info
-                try {
-                    // Verify transaction to get user email
-                    FlutterwaveService.TransactionVerification verification = flutterwaveService.verifyTransaction(txRef);
-                    if (verification != null && verification.getTxRef() != null) {
-                        // Try to find user by email pattern in txRef (e.g., wallet_topup_email_timestamp)
-                        // Or we can extract from Flutterwave response if available
-                        // For now, log and return - transaction will be created on next sync
-                        log.warn("Cannot create transaction without user info. Transaction will be created on next sync. txRef={}", txRef);
-                        return;
+            User user = null;
+            Wallet wallet = null;
+
+            // If transaction exists, get user and wallet from it
+            if (transaction != null) {
+                wallet = transaction.getWallet();
+                if (wallet != null) {
+                    user = wallet.getUser();
+                } else {
+                    log.warn("Transaction {} exists but has no associated wallet", transaction.getId());
+                }
+            }
+
+            // If transaction doesn't exist, we need to create it
+            // First, find or determine the user
+            if (user == null) {
+                // Try to find user by customer email from webhook
+                if (customerEmail != null && !customerEmail.trim().isEmpty()) {
+                    user = userRepository.findByEmail(customerEmail.trim().toLowerCase())
+                            .orElse(null);
+                    if (user != null) {
+                        log.info("Found user by email from webhook: email={}, userId={}", customerEmail, user.getId());
                     }
-                } catch (Exception e) {
-                    log.warn("Could not verify transaction to get user info: {}", e.getMessage());
+                }
+
+                // If still no user, try to extract email from txRef pattern
+                // Pattern: wallet_topup_email_timestamp or email_timestamp_id
+                if (user == null && txRef != null) {
+                    try {
+                        // Try patterns: wallet_topup_email_timestamp, email_timestamp_id
+                        String[] parts = txRef.split("_");
+                        for (int i = 0; i < parts.length; i++) {
+                            String part = parts[i];
+                            // Check if this part looks like an email (contains @)
+                            if (part.contains("@")) {
+                                // Try to reconstruct email (might be split across parts)
+                                String potentialEmail = part;
+                                if (i + 1 < parts.length && !parts[i + 1].matches("\\d+")) {
+                                    // Next part might be part of email domain
+                                    potentialEmail = part + "_" + parts[i + 1];
+                                }
+                                user = userRepository.findByEmail(potentialEmail.toLowerCase())
+                                        .orElse(null);
+                                if (user != null) {
+                                    log.info("Found user by email extracted from txRef: email={}, userId={}", potentialEmail, user.getId());
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.debug("Could not extract email from txRef: {}", e.getMessage());
+                    }
+                }
+
+                // If still no user, verify transaction with Flutterwave to get customer email
+                if (user == null && customerEmail == null) {
+                    try {
+                        log.info("Attempting to verify transaction with Flutterwave to get customer email: txRef={}", txRef);
+                        FlutterwaveService.TransactionVerification verification = flutterwaveService.verifyTransaction(txRef);
+                        if (verification != null && verification.getTxRef() != null) {
+                            String verifiedEmail = verification.getCustomerEmail();
+                            if (verifiedEmail != null && !verifiedEmail.trim().isEmpty()) {
+                                user = userRepository.findByEmail(verifiedEmail.trim().toLowerCase())
+                                        .orElse(null);
+                                if (user != null) {
+                                    log.info("Found user by email from Flutterwave verification: email={}, userId={}", verifiedEmail, user.getId());
+                                } else {
+                                    log.warn("Customer email from Flutterwave verification doesn't match any user: email={}", verifiedEmail);
+                                }
+                            } else {
+                                log.debug("Transaction verified but customer email not available in verification response");
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.debug("Could not verify transaction to get customer email: {}", e.getMessage());
+                    }
+                }
+
+                // If we still don't have a user, we can't process the webhook
+                if (user == null) {
+                    log.error("Cannot process webhook: Unable to determine user for txRef={}, flwRef={}, customerEmail={}. " +
+                            "Transaction will be created on next sync when user is identified.", txRef, flwRef, customerEmail);
                     return;
                 }
             }
 
-            Wallet wallet = transaction.getWallet();
+            // Get or create wallet for user
             if (wallet == null) {
-                log.error("Transaction {} has no associated wallet", transaction.getId());
-                return;
+                wallet = walletRepository.findByUserId(user.getId())
+                        .orElseGet(() -> {
+                            Wallet newWallet = Wallet.builder()
+                                    .user(user)
+                                    .balance(BigDecimal.ZERO)
+                                    .currency("NGN")
+                                    .status(Wallet.Status.ACTIVE)
+                                    .build();
+                            return walletRepository.save(newWallet);
+                        });
+                log.info("Retrieved or created wallet for user: userId={}, walletId={}", user.getId(), wallet.getId());
+            }
+
+            // If transaction doesn't exist, create it now
+            if (transaction == null) {
+                log.info("Creating new transaction from webhook: txRef={}, flwRef={}, amount={}, userId={}", 
+                        txRef, flwRef, amount, user.getId());
+                
+                // CRITICAL: Ensure transaction has proper reference in all fields for reliable tracking
+                transaction = Transaction.builder()
+                        .wallet(wallet)
+                        .user(user)
+                        .type(Transaction.Type.DEPOSIT)
+                        .status(Transaction.Status.PENDING)
+                        .amount(amount)
+                        .currency("NGN")
+                        .description("Wallet Top-up via Flutterwave")
+                        // Store reference in multiple fields for reliable matching
+                        .reference(txRef) // Primary reference field
+                        .flutterwaveTxRef(txRef) // Flutterwave transaction reference
+                        .flutterwaveFlwRef(flwRef) // Flutterwave flw reference
+                        .flutterwaveStatus(status)
+                        .createdAt(java.time.OffsetDateTime.now())
+                        .build();
+                
+                transaction = transactionRepository.save(transaction);
+                log.info("✅ Created new transaction from webhook: transactionId={}, txRef={}, flwRef={}", 
+                        transaction.getId(), txRef, flwRef);
             }
 
             boolean isSuccessful = "successful".equalsIgnoreCase(status) || 
@@ -446,28 +552,71 @@ public class WalletServiceImpl implements WalletService {
 
             if ("charge.completed".equals(event)) {
                 // Deposit completed - credit wallet
-                if (isSuccessful && (transaction.getStatus() == Transaction.Status.PENDING || 
-                                     transaction.getStatus() == Transaction.Status.PROCESSING)) {
-                    BigDecimal oldBalance = wallet.getBalance();
-                    transaction.setStatus(Transaction.Status.COMPLETED);
-                    transaction.setFlutterwaveFlwRef(flwRef);
-                    transaction.setFlutterwaveStatus(status);
-                    transaction.setProcessedAt(java.time.OffsetDateTime.now());
-                    transactionRepository.save(transaction);
-                    // Recalculate balance from all transactions instead of incremental update
-                    // This ensures balance always reflects the sum of all transactions
-                    syncBalanceWithFlutterwave(wallet.getUser());
-                    wallet = walletRepository.findByUserId(wallet.getUser().getId()).orElse(wallet);
-                    log.info("Wallet credited via webhook: userId={}, amount={}, oldBalance={}, newBalance={}", 
-                            wallet.getUser().getId(), amount, oldBalance, wallet.getBalance());
+                if (isSuccessful) {
+                    // Process transaction regardless of current status to ensure it's always updated
+                    // This handles cases where webhook arrives before initial transaction creation
+                    boolean wasPending = transaction.getStatus() == Transaction.Status.PENDING || 
+                                       transaction.getStatus() == Transaction.Status.PROCESSING;
+                    
+                    if (wasPending || transaction.getStatus() != Transaction.Status.COMPLETED) {
+                        BigDecimal oldBalance = wallet.getBalance();
+                        transaction.setStatus(Transaction.Status.COMPLETED);
+                        
+                        // CRITICAL: Update all reference fields to ensure proper tracking
+                        if (txRef != null && (transaction.getReference() == null || transaction.getReference().isEmpty())) {
+                            transaction.setReference(txRef);
+                        }
+                        if (txRef != null && (transaction.getFlutterwaveTxRef() == null || !transaction.getFlutterwaveTxRef().equals(txRef))) {
+                            transaction.setFlutterwaveTxRef(txRef);
+                        }
+                        if (flwRef != null) {
+                            transaction.setFlutterwaveFlwRef(flwRef);
+                        }
+                        transaction.setFlutterwaveStatus(status);
+                        transaction.setProcessedAt(java.time.OffsetDateTime.now());
+                        transactionRepository.save(transaction);
+                        
+                        // Recalculate balance from all transactions instead of incremental update
+                        // This ensures balance always reflects the sum of all transactions
+                        syncBalanceWithFlutterwave(wallet.getUser());
+                        wallet = walletRepository.findByUserId(wallet.getUser().getId()).orElse(wallet);
+                        log.info("✅ Wallet credited via webhook (REAL-TIME): userId={}, amount={}, oldBalance={}, newBalance={}, txRef={}, flwRef={}", 
+                                wallet.getUser().getId(), amount, oldBalance, wallet.getBalance(), txRef, flwRef);
+                    } else {
+                        // Even if already completed, update references if missing
+                        boolean referenceUpdated = false;
+                        if (txRef != null && (transaction.getReference() == null || transaction.getReference().isEmpty())) {
+                            transaction.setReference(txRef);
+                            referenceUpdated = true;
+                        }
+                        if (txRef != null && (transaction.getFlutterwaveTxRef() == null || !transaction.getFlutterwaveTxRef().equals(txRef))) {
+                            transaction.setFlutterwaveTxRef(txRef);
+                            referenceUpdated = true;
+                        }
+                        if (flwRef != null && (transaction.getFlutterwaveFlwRef() == null || !transaction.getFlutterwaveFlwRef().equals(flwRef))) {
+                            transaction.setFlutterwaveFlwRef(flwRef);
+                            referenceUpdated = true;
+                        }
+                        if (referenceUpdated) {
+                            transactionRepository.save(transaction);
+                            log.info("✅ Updated transaction references: txRef={}, flwRef={}", txRef, flwRef);
+                        } else {
+                            log.debug("Transaction {} already completed with all references, skipping duplicate processing", transaction.getId());
+                        }
+                    }
                 } else if (!isSuccessful) {
                     transaction.setStatus(Transaction.Status.FAILED);
                     transaction.setFlutterwaveStatus(status);
                     transaction.setProcessedAt(java.time.OffsetDateTime.now());
+                    // Ensure references are set even for failed transactions
+                    if (txRef != null && (transaction.getReference() == null || transaction.getReference().isEmpty())) {
+                        transaction.setReference(txRef);
+                    }
+                    if (txRef != null && (transaction.getFlutterwaveTxRef() == null || !transaction.getFlutterwaveTxRef().equals(txRef))) {
+                        transaction.setFlutterwaveTxRef(txRef);
+                    }
                     transactionRepository.save(transaction);
                     log.warn("Deposit failed via webhook: txRef={}, status={}", txRef, status);
-                } else {
-                    log.info("Transaction {} already processed with status {}", transaction.getId(), transaction.getStatus());
                 }
             } else if ("transfer.completed".equals(event)) {
                 // Transfer completed - already deducted, just update status
@@ -642,7 +791,11 @@ public class WalletServiceImpl implements WalletService {
                         return walletRepository.save(newWallet);
                     });
             
+            // CRITICAL: Use the charged amount (what customer paid), not settled amount
+            // Flutterwave fees are deducted before settlement, but customer's wallet should reflect full amount paid
             BigDecimal amount = verification.getAmount() != null ? verification.getAmount() : BigDecimal.ZERO;
+            log.info("Processing transaction - Amount from Flutterwave verification: NGN {} (this is the amount charged to customer, not settled amount), txRef: {}", 
+                    amount, txRef);
             
             if (existingTransaction != null) {
                 // Update existing transaction
@@ -656,27 +809,32 @@ public class WalletServiceImpl implements WalletService {
                 // Recalculate balance from all transactions instead of incremental update
                 syncBalanceWithFlutterwave(user);
                 wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
-                log.info("Transaction updated and wallet credited: userId={}, amount={}, oldBalance={}, newBalance={}", 
-                        user.getId(), amount, oldBalance, wallet.getBalance());
+                log.info("✅ Transaction updated and wallet credited with FULL charged amount: userId={}, amountCharged=NGN {}, oldBalance=NGN {}, newBalance=NGN {}, txRef={}", 
+                        user.getId(), amount, oldBalance, wallet.getBalance(), txRef);
                 } else {
                     log.info("Transaction {} already completed", txRef);
                 }
                 return toTransactionResponse(existingTransaction);
             } else {
                 // Create new transaction
+                // CRITICAL: Ensure transaction has proper reference in all fields for reliable tracking
+                String flwRef = verification.getFlwRef();
+                
                 Transaction newTransaction = Transaction.builder()
                         .wallet(wallet)
                         .user(user)
                         .type(Transaction.Type.DEPOSIT)
                         .status(Transaction.Status.COMPLETED)
-                        .amount(amount)
+                        .amount(amount) // Full charged amount, not settled amount
                         .currency(verification.getCurrency() != null ? verification.getCurrency() : "NGN")
                         .description("Wallet deposit via Flutterwave")
-                        .reference(txRef)
-                        .flutterwaveTxRef(txRef)
-                        .flutterwaveFlwRef(verification.getFlwRef())
+                        // Store reference in multiple fields for reliable matching
+                        .reference(txRef) // Primary reference field
+                        .flutterwaveTxRef(txRef) // Flutterwave transaction reference
+                        .flutterwaveFlwRef(flwRef) // Flutterwave flw reference
                         .flutterwaveStatus(verification.getStatus())
                         .processedAt(java.time.OffsetDateTime.now())
+                        .createdAt(java.time.OffsetDateTime.now())
                         .build();
                 
                 BigDecimal oldBalance = wallet.getBalance();
@@ -684,8 +842,8 @@ public class WalletServiceImpl implements WalletService {
                 // Recalculate balance from all transactions instead of incremental update
                 syncBalanceWithFlutterwave(user);
                 wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
-                log.info("New transaction created and wallet credited: userId={}, amount={}, oldBalance={}, newBalance={}", 
-                        user.getId(), amount, oldBalance, wallet.getBalance());
+                log.info("✅ New transaction created and wallet credited with FULL charged amount: userId={}, amountCharged=NGN {}, oldBalance=NGN {}, newBalance=NGN {}, txRef={}", 
+                        user.getId(), amount, oldBalance, wallet.getBalance(), txRef);
                 return toTransactionResponse(saved);
             }
         } catch (Exception e) {
@@ -719,45 +877,131 @@ public class WalletServiceImpl implements WalletService {
             wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
             
             // Fetch transactions from Flutterwave API
-            java.util.List<FlutterwaveService.TransactionVerification> flutterwaveTransactions = 
-                flutterwaveService.fetchTransactionsByEmail(user.getEmail());
+            // Normalize email to ensure it matches what Flutterwave has
+            String normalizedEmail = user.getEmail() != null ? user.getEmail().toLowerCase().trim() : null;
+            if (normalizedEmail == null || normalizedEmail.isEmpty()) {
+                log.warn("User {} has no email, cannot fetch transactions from Flutterwave", user.getId());
+                normalizedEmail = null;
+            }
             
-            log.info("Fetched {} transactions from Flutterwave for user {}", flutterwaveTransactions.size(), user.getId());
+            java.util.List<FlutterwaveService.TransactionVerification> flutterwaveTransactions = 
+                java.util.Collections.emptyList();
+            
+            if (normalizedEmail != null) {
+                try {
+                    flutterwaveTransactions = flutterwaveService.fetchTransactionsByEmail(normalizedEmail);
+                    log.info("Fetched {} transactions from Flutterwave for user {} (email: {})", 
+                            flutterwaveTransactions.size(), user.getId(), normalizedEmail);
+                } catch (Exception e) {
+                    log.error("Error fetching transactions from Flutterwave for user {}: {}", user.getId(), e.getMessage(), e);
+                    // Continue with pending transaction verification even if fetch fails
+                }
+            }
             
             int newTransactionsAdded = 0;
             int existingTransactionsSkipped = 0;
+            int transactionsUpdated = 0;
+            
+            log.info("Processing {} transactions fetched from Flutterwave for user {} (email: {})", 
+                    flutterwaveTransactions.size(), user.getId(), normalizedEmail);
             
             // Process each transaction from Flutterwave
             for (FlutterwaveService.TransactionVerification verification : flutterwaveTransactions) {
                 if (verification.getTxRef() == null || verification.getTxRef().isEmpty()) {
+                    log.warn("Skipping transaction with null or empty txRef: flwRef={}", verification.getFlwRef());
                     continue;
                 }
                 
+                String txRef = verification.getTxRef();
+                log.debug("Processing transaction: txRef={}, amount={}, status={}", 
+                        txRef, verification.getAmount(), verification.getStatus());
+                
                 try {
                     // Check if transaction already exists in database
+                    // Check by FlutterwaveTxRef first, then by reference field (in case txRef is stored in reference)
                     java.util.Optional<Transaction> existingTx = transactionRepository.findByFlutterwaveTxRef(verification.getTxRef());
                     
+                    // Also check by reference field in case transaction was stored with txRef in reference field
+                    if (!existingTx.isPresent()) {
+                        existingTx = transactionRepository.findByReference(verification.getTxRef());
+                    }
+                    
                     if (existingTx.isPresent()) {
-                        // Transaction already exists, skip
-                        existingTransactionsSkipped++;
-                        log.debug("Transaction {} already exists in database, skipping", verification.getTxRef());
+                        // Transaction already exists, but verify it's completed
+                        Transaction existing = existingTx.get();
+                        // Update transaction with latest information from Flutterwave
+                        boolean wasUpdated = false;
+                        
+                        // Update status if it was pending/processing
+                        if (existing.getStatus() != Transaction.Status.COMPLETED) {
+                            log.info("Updating existing transaction status from {} to COMPLETED: txRef={}", 
+                                    existing.getStatus(), verification.getTxRef());
+                            existing.setStatus(Transaction.Status.COMPLETED);
+                            wasUpdated = true;
+                        }
+                        
+                        // Update Flutterwave references if missing or different
+                        String txRef = verification.getTxRef();
+                        String flwRef = verification.getFlwRef();
+                        if (txRef != null && (existing.getFlutterwaveTxRef() == null || !existing.getFlutterwaveTxRef().equals(txRef))) {
+                            existing.setFlutterwaveTxRef(txRef);
+                            wasUpdated = true;
+                        }
+                        if (flwRef != null && (existing.getFlutterwaveFlwRef() == null || !existing.getFlutterwaveFlwRef().equals(flwRef))) {
+                            existing.setFlutterwaveFlwRef(flwRef);
+                            wasUpdated = true;
+                        }
+                        if (verification.getStatus() != null && (existing.getFlutterwaveStatus() == null || !existing.getFlutterwaveStatus().equals(verification.getStatus()))) {
+                            existing.setFlutterwaveStatus(verification.getStatus());
+                            wasUpdated = true;
+                        }
+                        
+                        // Update reference field if missing
+                        if (txRef != null && (existing.getReference() == null || existing.getReference().isEmpty())) {
+                            existing.setReference(txRef);
+                            wasUpdated = true;
+                        }
+                        
+                        // Update processedAt timestamp
+                        existing.setProcessedAt(java.time.OffsetDateTime.now());
+                        
+                        if (wasUpdated) {
+                            transactionRepository.save(existing);
+                            // Recalculate balance
+                            syncBalanceWithFlutterwave(user);
+                            transactionsUpdated++; // Count as updated
+                            log.info("✅ Updated existing transaction: txRef={}, flwRef={}, status={}", 
+                                    txRef, flwRef, existing.getStatus());
+                        } else {
+                            existingTransactionsSkipped++;
+                            log.debug("Transaction {} already exists and is up-to-date, skipping", verification.getTxRef());
+                        }
                         continue;
                     }
                     
                     // Transaction doesn't exist, create it
                     BigDecimal amount = verification.getAmount() != null ? verification.getAmount() : BigDecimal.ZERO;
                     
+                    // CRITICAL: Ensure transaction has proper reference in all fields for reliable tracking
+                    String txRef = verification.getTxRef();
+                    String flwRef = verification.getFlwRef();
+                    
+                    // Use the charged amount (what customer paid), not settled amount
+                    log.info("Creating new transaction from Flutterwave sync: txRef={}, amountCharged=NGN {}, flwRef={}, status={}", 
+                            txRef, amount, flwRef, verification.getStatus());
+                    
                     Transaction newTransaction = Transaction.builder()
                             .wallet(wallet)
                             .user(user)
                             .type(Transaction.Type.DEPOSIT)
                             .status(Transaction.Status.COMPLETED)
-                            .amount(amount)
+                            .amount(amount) // Full charged amount, not settled amount
                             .currency(verification.getCurrency() != null ? verification.getCurrency() : "NGN")
-                            .description("Wallet deposit via Flutterwave (synced)")
-                            .reference(verification.getTxRef())
-                            .flutterwaveTxRef(verification.getTxRef())
-                            .flutterwaveFlwRef(verification.getFlwRef())
+                            .description("Wallet deposit via Flutterwave (synced from Flutterwave dashboard)")
+                            // Store reference in multiple fields for reliable matching
+                            .reference(txRef) // Primary reference field
+                            .flutterwaveTxRef(txRef) // Flutterwave transaction reference
+                            .flutterwaveFlwRef(flwRef) // Flutterwave flw reference
                             .flutterwaveStatus(verification.getStatus())
                             .processedAt(java.time.OffsetDateTime.now())
                             .createdAt(java.time.OffsetDateTime.now())
@@ -765,8 +1009,13 @@ public class WalletServiceImpl implements WalletService {
                     
                     transactionRepository.save(newTransaction);
                     newTransactionsAdded++;
-                    log.info("Added missing transaction from Flutterwave: txRef={}, amount={}", 
-                            verification.getTxRef(), amount);
+                    log.info("✅ Added missing transaction from Flutterwave: txRef={}, amountCharged=NGN {}, flwRef={}, status={}", 
+                            txRef, amount, verification.getFlwRef(), verification.getStatus());
+                    
+                    // Recalculate balance after adding transaction
+                    syncBalanceWithFlutterwave(user);
+                    wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
+                    log.info("✅ Wallet balance after adding transaction: NGN {}", wallet.getBalance());
                 } catch (Exception e) {
                     log.warn("Failed to process transaction {} from Flutterwave: {}", 
                             verification.getTxRef(), e.getMessage());
@@ -782,23 +1031,84 @@ public class WalletServiceImpl implements WalletService {
             
             log.info("Found {} pending transactions for user {}", pendingTransactions.size(), user.getId());
             
-            // Verify each pending transaction
+            // Verify each pending transaction with retry logic
+            int pendingVerified = 0;
+            int pendingFailed = 0;
             for (Transaction transaction : pendingTransactions) {
-                if (transaction.getFlutterwaveTxRef() != null && !transaction.getFlutterwaveTxRef().isEmpty()) {
-                    try {
-                        log.info("Verifying pending transaction: txRef={}", transaction.getFlutterwaveTxRef());
-                        verifyAndProcessTransaction(transaction.getFlutterwaveTxRef(), user);
-                    } catch (Exception e) {
-                        log.warn("Failed to verify transaction {}: {}", transaction.getFlutterwaveTxRef(), e.getMessage());
-                        // Continue with other transactions
+                try {
+                    // Try to get txRef from FlutterwaveTxRef first, then from reference field
+                    String txRef = null;
+                    if (transaction.getFlutterwaveTxRef() != null && !transaction.getFlutterwaveTxRef().isEmpty()) {
+                        txRef = transaction.getFlutterwaveTxRef();
+                    } else if (transaction.getReference() != null && !transaction.getReference().isEmpty()) {
+                        txRef = transaction.getReference();
+                        log.info("Pending transaction has no FlutterwaveTxRef, using reference field: {}", txRef);
                     }
+                    
+                    if (txRef != null && !txRef.isEmpty()) {
+                        log.info("🔄 Verifying pending transaction: txRef={}, transactionId={}, amount={}", 
+                                txRef, transaction.getId(), transaction.getAmount());
+                        
+                        // Retry verification up to 3 times
+                        TransactionResponse result = null;
+                        Exception lastError = null;
+                        for (int retry = 1; retry <= 3; retry++) {
+                            try {
+                                result = verifyAndProcessTransaction(txRef, user);
+                                if (result != null && result.getStatus() != null && 
+                                    "COMPLETED".equalsIgnoreCase(result.getStatus())) {
+                                    log.info("✅ Successfully verified and processed pending transaction: txRef={} (attempt {})", 
+                                            txRef, retry);
+                                    pendingVerified++;
+                                    break;
+                                }
+                            } catch (Exception e) {
+                                lastError = e;
+                                if (retry < 3) {
+                                    log.warn("⚠️ Verification attempt {} failed for txRef={}, retrying... Error: {}", 
+                                            retry, txRef, e.getMessage());
+                                    Thread.sleep(1000 * retry); // Exponential backoff
+                                }
+                            }
+                        }
+                        
+                        if (result == null || result.getStatus() == null || 
+                            !"COMPLETED".equalsIgnoreCase(result.getStatus())) {
+                            pendingFailed++;
+                            log.warn("⚠️ Failed to verify pending transaction {} after retries: txRef={}", 
+                                    transaction.getId(), txRef);
+                        }
+                    } else {
+                        pendingFailed++;
+                        log.warn("⚠️ Pending transaction {} has no txRef or reference to verify. Transaction details: status={}, amount={}, createdAt={}", 
+                                transaction.getId(), transaction.getStatus(), transaction.getAmount(), transaction.getCreatedAt());
+                    }
+                } catch (Exception e) {
+                    pendingFailed++;
+                    log.error("❌ Failed to verify pending transaction {}: {}", transaction.getId(), e.getMessage(), e);
+                    // Continue with other transactions
                 }
+            }
+            
+            if (pendingVerified > 0) {
+                log.info("✅ Verified {} pending transactions successfully", pendingVerified);
+            }
+            if (pendingFailed > 0) {
+                log.warn("⚠️ Failed to verify {} pending transactions", pendingFailed);
             }
             
             // Final sync to ensure balance is correct
             syncBalanceWithFlutterwave(user);
-            log.info("Completed syncing all transactions for user {}: Added {} new transactions, Skipped {} existing transactions", 
-                    user.getId(), newTransactionsAdded, existingTransactionsSkipped);
+            wallet = walletRepository.findByUserId(user.getId()).orElse(wallet);
+            
+            log.info("✅ Completed syncing all transactions for user {}: Added {} new transactions, Updated {} transactions, Skipped {} existing transactions, Final balance: NGN {}", 
+                    user.getId(), newTransactionsAdded, transactionsUpdated, existingTransactionsSkipped, wallet.getBalance());
+            
+            // Log summary of transaction references processed
+            if (newTransactionsAdded > 0 || transactionsUpdated > 0) {
+                log.info("✅ Successfully processed {} transactions from Flutterwave dashboard for user {}", 
+                        newTransactionsAdded + transactionsUpdated, user.getId());
+            }
         } catch (Exception e) {
             log.error("Error syncing all transactions for user {}: {}", user.getId(), e.getMessage(), e);
             throw new RuntimeException("Failed to sync all transactions: " + e.getMessage(), e);

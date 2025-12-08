@@ -57,8 +57,8 @@ export default function PaymentConfirmationScreen() {
     // No maximum payment limit - calculates total based on daily rate and days
     const dailyRate = apartment?.price || 0; // Price is already daily rate
     const basePrice = dailyRate * numberOfDays;
-    const cleaningFee = 2500; // Fixed cleaning fee: ₦2,500
-    const serviceFee = 3000; // Fixed service fee: ₦3,000
+    const cleaningFee = 0; // Fixed cleaning fee: ₦0 (set to 0 until changed)
+    const serviceFee = 0; // Fixed service fee: ₦0 (set to 0 until changed)
     const total = basePrice + cleaningFee + serviceFee;
 
     return {

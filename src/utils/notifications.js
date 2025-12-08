@@ -286,6 +286,29 @@ export const notifyHostWalletFunded = async (hostEmail, amount, propertyTitle) =
 };
 
 /**
+ * Notify guest that host has requested payment
+ * @param {string} guestEmail - Guest's email address
+ * @param {number} amount - Payment amount requested
+ * @param {string} propertyTitle - Title of the property
+ * @param {string} bookingId - Booking ID
+ */
+export const notifyPaymentRequested = async (guestEmail, amount, propertyTitle, bookingId = null) => {
+  if (!guestEmail) {
+    console.warn('Cannot notify guest: No guest email provided');
+    return null;
+  }
+  
+  const formattedAmount = `₦${amount.toLocaleString()}`;
+  
+  return await addNotification(
+    NOTIFICATION_TYPES.PAYMENT,
+    'Payment Requested',
+    `Host has requested payment of ${formattedAmount} for your booking at "${propertyTitle}". Please approve to release funds.`,
+    guestEmail // Send to guest's email
+  );
+};
+
+/**
  * Get all notifications
  */
 export const getNotifications = async (userEmail = null) => {

@@ -15,6 +15,7 @@ import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { getHostBookings } from '../utils/bookings';
 import { useAuth } from '../hooks/useAuth';
+import { getEscrowPayments, requestEscrowPayment, isCheckInDateReached } from '../utils/escrow';
 
 export default function HostBookedListingsScreen() {
   const navigation = useNavigation();
@@ -64,28 +65,13 @@ export default function HostBookedListingsScreen() {
         return;
       }
       
-      // Check if user has listings - redirect if they don't
+      // Check if user has listings - show empty state if they don't
       const userHasListings = await checkUserListings();
       setHasListings(userHasListings);
       
+      // If user has no listings, show empty state (don't return early)
       if (!userHasListings) {
-        Alert.alert(
-          'No Listings',
-          'You need to upload at least one listing to view booked listings.',
-          [
-            {
-              text: 'Go Back',
-              onPress: () => navigation.goBack(),
-            },
-            {
-              text: 'Upload Listing',
-              onPress: () => {
-                navigation.goBack();
-                navigation.navigate('MyListings');
-              },
-            },
-          ]
-        );
+        setBookings([]);
         setLoading(false);
         setRefreshing(false);
         return;
@@ -93,8 +79,97 @@ export default function HostBookedListingsScreen() {
       
       const normalizedEmail = user.email.toLowerCase().trim();
       
+      console.log('🔍 HostBookedListingsScreen - Loading bookings for:', normalizedEmail);
+      console.log('🔍 User email (original):', user.email);
+      
       // Get host bookings (bookings where user is the host)
-      const hostBookings = await getHostBookings(normalizedEmail);
+      // Always sync from guest bookings to ensure we catch any bookings that weren't stored directly
+      // Try with normalized email first, and sync from guest bookings
+      let hostBookings = await getHostBookings(normalizedEmail, true); // true = sync from guest bookings
+      
+      // If no bookings found, try with original email (in case of storage inconsistency)
+      if ((!hostBookings || hostBookings.length === 0) && user.email !== normalizedEmail) {
+        console.log('⚠️ No bookings found with normalized email, trying original email...');
+        hostBookings = await getHostBookings(user.email);
+      }
+      
+      // FALLBACK: If still no bookings, try to find bookings by matching apartment IDs
+      // This handles cases where email might not match exactly
+      if ((!hostBookings || hostBookings.length === 0)) {
+        console.log('⚠️ No bookings found by email, trying fallback: matching by apartment IDs...');
+        try {
+          const { getMyListings } = await import('../utils/listings');
+          const userListings = await getMyListings();
+          
+          let apiListings = [];
+          try {
+            const { hybridApartmentService } = await import('../services/hybridService');
+            const apiResult = await hybridApartmentService.getMyApartments();
+            if (apiResult && Array.isArray(apiResult) && apiResult.length > 0) {
+              apiListings = apiResult;
+            }
+          } catch (apiError) {
+            // API not available
+          }
+          
+          const allListings = [...userListings, ...apiListings];
+          const userApartmentIds = new Set(
+            allListings.map(listing => String(listing.id || listing._id || ''))
+          );
+          
+          console.log(`📋 User has ${userApartmentIds.size} listings, checking all host bookings...`);
+          
+          // Try to find bookings by checking all possible host emails from listings
+          const possibleHostEmails = new Set();
+          allListings.forEach(listing => {
+            if (listing.createdBy) possibleHostEmails.add(listing.createdBy.toLowerCase().trim());
+            if (listing.hostEmail) possibleHostEmails.add(listing.hostEmail.toLowerCase().trim());
+          });
+          
+          // Also add normalized user email
+          possibleHostEmails.add(normalizedEmail);
+          
+          console.log(`📋 Checking ${possibleHostEmails.size} possible host emails...`);
+          
+          // Get bookings for all possible emails
+          const allPossibleBookings = [];
+          for (const email of possibleHostEmails) {
+            const bookings = await getHostBookings(email);
+            if (bookings && bookings.length > 0) {
+              // Filter to only include bookings for user's apartments
+              const matchingBookings = bookings.filter(booking => {
+                const bookingApartmentId = String(booking.apartmentId || '');
+                return userApartmentIds.has(bookingApartmentId);
+              });
+              allPossibleBookings.push(...matchingBookings);
+            }
+          }
+          
+          if (allPossibleBookings.length > 0) {
+            console.log(`✅ Found ${allPossibleBookings.length} bookings via fallback method`);
+            hostBookings = allPossibleBookings;
+          }
+        } catch (fallbackError) {
+          console.error('Error in fallback booking search:', fallbackError);
+        }
+      }
+      
+      console.log(`📋 Final result: Found ${hostBookings?.length || 0} host bookings for ${normalizedEmail}`);
+      if (hostBookings && hostBookings.length > 0) {
+        console.log('📋 Sample booking:', {
+          id: hostBookings[0].id,
+          title: hostBookings[0].title,
+          hostEmail: hostBookings[0].hostEmail,
+          guestEmail: hostBookings[0].guestEmail,
+          bookingDate: hostBookings[0].bookingDate
+        });
+      } else {
+        console.warn('⚠️ No bookings found! This might indicate:');
+        console.warn('  1. Booking was not stored correctly');
+        console.warn('  2. Email mismatch between booking storage and retrieval');
+        console.warn('  3. User email does not match host email in apartment');
+        console.warn('  4. Booking was made but host email was null/undefined');
+      }
       
       const mappedBookings = Array.isArray(hostBookings) ? hostBookings.map(booking => ({
         id: booking.id || String(booking.id),
@@ -139,12 +214,36 @@ export default function HostBookedListingsScreen() {
       
       const allListings = [...userListings, ...apiListings];
       
-      // Enrich bookings with apartment details
-      const enrichedBookings = sortedBookings.map(booking => {
+      // Enrich bookings with apartment details and escrow status
+      const enrichedBookings = await Promise.all(sortedBookings.map(async (booking) => {
         const apartmentId = booking.apartmentId;
         const apartment = allListings.find(listing => 
           (listing.id || listing._id || String(listing.id)) === String(apartmentId)
         );
+        
+        // Check escrow status for this booking
+        let escrowPayment = null;
+        let canRequestPayment = false;
+        if (booking.guestEmail) {
+          try {
+            const guestEmail = booking.guestEmail.toLowerCase().trim();
+            const guestEscrowPayments = await getEscrowPayments(guestEmail);
+            if (Array.isArray(guestEscrowPayments)) {
+              escrowPayment = guestEscrowPayments.find(ep => ep && ep.bookingId === booking.id);
+              
+              if (escrowPayment) {
+                // Can request payment if:
+                // 1. Status is "in_escrow"
+                // 2. Check-in date has arrived
+                canRequestPayment = escrowPayment.status === 'in_escrow' && 
+                                    isCheckInDateReached(booking.checkInDate);
+              }
+            }
+          } catch (error) {
+            console.error('Error checking escrow status:', error);
+            // Continue without escrow data if there's an error
+          }
+        }
         
         return {
           ...booking,
@@ -155,8 +254,10 @@ export default function HostBookedListingsScreen() {
             maxGuests: apartment.maxGuests || apartment.guests || null,
             price: apartment.price || apartment.rent || null,
           } : null,
+          escrowPayment,
+          canRequestPayment,
         };
-      });
+      }));
       
       setBookings(enrichedBookings);
       console.log(`✅ Loaded ${enrichedBookings.length} individual bookings`);
@@ -172,9 +273,15 @@ export default function HostBookedListingsScreen() {
   // Load bookings when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
+      // Force reload when screen comes into focus to catch new bookings
       loadBookings();
     }, [user])
   );
+  
+  // Also reload on mount
+  useEffect(() => {
+    loadBookings();
+  }, [user]);
 
   const onRefresh = React.useCallback(() => {
     setRefreshing(true);
@@ -198,10 +305,29 @@ export default function HostBookedListingsScreen() {
     }
   };
 
-  const getStatusColor = (status) => {
+  const getStatusColor = (status, escrowStatus) => {
+    // Check escrow status first
+    if (escrowStatus) {
+      if (escrowStatus === 'payment_requested') {
+        return '#FF9800';
+      }
+      if (escrowStatus === 'in_escrow') {
+        return '#2196F3';
+      }
+      if (escrowStatus === 'payment_confirmed' || escrowStatus === 'payment_released') {
+        return '#4CAF50';
+      }
+    }
+    
+    // Fall back to booking status
     switch (status?.toLowerCase()) {
       case 'confirmed':
+      case 'payment confirmed':
         return '#4CAF50';
+      case 'payment requested':
+        return '#FF9800';
+      case 'in escrow':
+        return '#2196F3';
       case 'pending':
         return '#FF9800';
       case 'cancelled':
@@ -209,6 +335,53 @@ export default function HostBookedListingsScreen() {
       default:
         return '#666';
     }
+  };
+
+  const getStatusText = (status, escrowStatus) => {
+    // Check escrow status first
+    if (escrowStatus) {
+      if (escrowStatus === 'payment_requested') {
+        return 'Payment Requested';
+      }
+      if (escrowStatus === 'in_escrow') {
+        return 'In Escrow';
+      }
+      if (escrowStatus === 'payment_confirmed' || escrowStatus === 'payment_released') {
+        return 'Payment Confirmed';
+      }
+    }
+    
+    // Fall back to booking status
+    return status || 'Unknown';
+  };
+
+  const handleRequestPayment = async (booking) => {
+    if (!user || !user.email || !booking.guestEmail) {
+      Alert.alert('Error', 'Unable to request payment. Missing information.');
+      return;
+    }
+
+    Alert.alert(
+      'Request Payment',
+      `Request payment of ${formatPrice(booking.totalAmount)} from ${booking.guestName || 'guest'}?\n\nThis will notify the guest to confirm payment.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Request Payment',
+          onPress: async () => {
+            try {
+              await requestEscrowPayment(booking.guestEmail, booking.id, user.email);
+              // In-app notification is sent automatically by requestEscrowPayment function
+              Alert.alert('Success', 'Payment request sent! The guest will receive an in-app notification and email to approve payment.');
+              loadBookings(); // Reload to show updated status
+            } catch (error) {
+              console.error('Error requesting payment:', error);
+              Alert.alert('Error', error.message || 'Failed to request payment. Please try again.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (loading) {
@@ -303,9 +476,9 @@ export default function HostBookedListingsScreen() {
                   </View>
                 )}
                 {/* Status Badge Overlay */}
-                <View style={[styles.statusBadgeOverlay, { backgroundColor: getStatusColor(booking.status) + 'E6' }]}>
+                <View style={[styles.statusBadgeOverlay, { backgroundColor: getStatusColor(booking.status, booking.escrowPayment?.status) + 'E6' }]}>
                   <Text style={styles.statusTextOverlay}>
-                    {booking.status || 'Pending'}
+                    {getStatusText(booking.status, booking.escrowPayment?.status || booking.escrowStatus)}
                   </Text>
                 </View>
               </View>
@@ -344,6 +517,19 @@ export default function HostBookedListingsScreen() {
                     </View>
                   </View>
                 </View>
+                {/* Request Payment Button for Escrow Bookings */}
+                {booking.canRequestPayment && (
+                  <TouchableOpacity
+                    style={styles.requestPaymentButton}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      handleRequestPayment(booking);
+                    }}
+                  >
+                    <MaterialIcons name="payment" size={18} color="#FFF" />
+                    <Text style={styles.requestPaymentButtonText}>Request Payment</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </TouchableOpacity>
           ))
@@ -526,6 +712,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginHorizontal: 4,
+  },
+  requestPaymentButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FF9800',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    marginTop: 12,
+    gap: 6,
+  },
+  requestPaymentButtonText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

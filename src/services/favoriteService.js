@@ -1,11 +1,12 @@
 // Favorites Service
 import api from './api';
+import { API_ENDPOINTS } from '../config/api';
 
 export const favoriteService = {
   // Add to favorites
   addFavorite: async (apartmentId) => {
     try {
-      const response = await api.post('/api/favorites', {
+      const response = await api.post(API_ENDPOINTS.FAVORITES.ADD, {
         apartmentId,
       });
       // If response is null (403, 401, etc.), return null for hybrid service to handle
@@ -22,7 +23,7 @@ export const favoriteService = {
   // Remove from favorites
   removeFavorite: async (apartmentId) => {
     try {
-      const response = await api.delete(`/api/favorites/${apartmentId}`);
+      const response = await api.delete(API_ENDPOINTS.FAVORITES.REMOVE(apartmentId));
       // If response is null (403, 401, etc.), return null for hybrid service to handle
       if (response === null || response === undefined) {
         return null;
@@ -37,7 +38,7 @@ export const favoriteService = {
   // Get favorites
   getFavorites: async () => {
     try {
-      const response = await api.get('/api/favorites');
+      const response = await api.get(API_ENDPOINTS.FAVORITES.LIST);
       // If response is null (403, 401, etc.), return null for hybrid service to handle
       if (response === null || response === undefined) {
         return null;
@@ -52,7 +53,7 @@ export const favoriteService = {
   // Check if apartment is favorite
   isFavorite: async (apartmentId) => {
     try {
-      const response = await api.get(`/api/favorites/check/${apartmentId}`);
+      const response = await api.get(API_ENDPOINTS.FAVORITES.CHECK(apartmentId));
       return response.data?.isFavorite || false;
     } catch (error) {
       return false;

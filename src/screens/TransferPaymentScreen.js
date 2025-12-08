@@ -20,7 +20,7 @@ import { sendBookingEmails } from '../utils/emailService';
 import { getUserProfile } from '../utils/userStorage';
 import { hybridWalletService } from '../services/hybridService';
 import { notifyHostNewBooking, notifyHostWalletFunded } from '../utils/notifications';
-import { createVirtualAccount } from '../services/flutterwaveService';
+import { createVirtualAccount, verifyAndFundWallet } from '../services/flutterwaveService';
 
 export default function TransferPaymentScreen() {
   const route = useRoute();
@@ -41,6 +41,22 @@ export default function TransferPaymentScreen() {
   const [virtualAccountError, setVirtualAccountError] = useState(null);
   const [txRef, setTxRef] = useState(null);
 
+  // Debug: Log when virtualAccount state changes
+  useEffect(() => {
+    if (virtualAccount || loadingAccount || virtualAccountError) {
+      console.log('🔍 Virtual Account State:', {
+        status: loadingAccount ? 'loading' : virtualAccountError ? 'error' : virtualAccount ? 'ready' : 'idle',
+        hasAccount: !!virtualAccount,
+        accountNumber: virtualAccount?.accountNumber || 'N/A',
+        bankName: virtualAccount?.bankName || 'N/A',
+        accountName: virtualAccount?.accountName || 'N/A',
+        txRef: txRef || 'N/A',
+        error: virtualAccountError || null,
+        timestamp: new Date().toISOString()
+      });
+    }
+  }, [virtualAccount, loadingAccount, virtualAccountError, txRef]);
+
   const formatPrice = (price) => {
     return `₦${price.toLocaleString()}`;
   };
@@ -50,6 +66,33 @@ export default function TransferPaymentScreen() {
     const fetchVirtualAccount = async () => {
       if (!user || !user.email || !totalAmount || !apartment) {
         setLoadingAccount(false);
+        return;
+      }
+
+      // Check Flutterwave v3 API limit: 500,000 NGN per virtual account
+      const FLUTTERWAVE_MAX_AMOUNT = 500000;
+      if (totalAmount > FLUTTERWAVE_MAX_AMOUNT) {
+        setLoadingAccount(false);
+        Alert.alert(
+          'Amount Limit Exceeded',
+          `Bank transfer payment is limited to ₦${FLUTTERWAVE_MAX_AMOUNT.toLocaleString()} per transaction.\n\n` +
+          `Booking amount: ₦${totalAmount.toLocaleString()}\n\n` +
+          `Please use card payment for this booking.`,
+          [
+            { text: 'OK' },
+            { 
+              text: 'Use Card Payment', 
+              onPress: () => navigation.navigate('CardPayment', {
+                apartment,
+                totalAmount,
+                checkInDate,
+                checkOutDate,
+                numberOfDays,
+                numberOfGuests,
+              })
+            }
+          ]
+        );
         return;
       }
 
@@ -111,6 +154,13 @@ export default function TransferPaymentScreen() {
         }
 
         // Create virtual account via Flutterwave
+        console.log('🔄 Creating virtual account for booking payment:', {
+          email: user.email,
+          amount: totalAmount,
+          name: userName,
+          txRef: generatedTxRef
+        });
+        
         const accountDetails = await createVirtualAccount(
           user.email,
           totalAmount,
@@ -118,24 +168,74 @@ export default function TransferPaymentScreen() {
           generatedTxRef
         );
 
-        setVirtualAccount(accountDetails);
+        console.log('✅ Virtual account created successfully:', accountDetails);
+        console.log('✅ Account type:', typeof accountDetails);
+        console.log('✅ Account keys:', accountDetails ? Object.keys(accountDetails) : 'N/A');
+        
+        // Handle both camelCase and snake_case response formats
+        const normalizedAccount = {
+          accountNumber: accountDetails?.accountNumber || accountDetails?.account_number,
+          bankName: accountDetails?.bankName || accountDetails?.bank_name || 'Virtual Bank',
+          accountName: accountDetails?.accountName || accountDetails?.account_name || 'Nigerian Apartments Leasing Ltd',
+          txRef: accountDetails?.txRef || accountDetails?.tx_ref || generatedTxRef
+        };
+        
+        console.log('✅ Normalized account:', normalizedAccount);
+        console.log('✅ Account Number:', normalizedAccount.accountNumber);
+        console.log('✅ Bank Name:', normalizedAccount.bankName);
+        console.log('✅ Account Name:', normalizedAccount.accountName);
+        
+        if (!normalizedAccount.accountNumber) {
+          console.error('❌ Account number is missing! Account details:', JSON.stringify(accountDetails, null, 2));
+          throw new Error('Failed to create virtual account: Account number not found in response');
+        }
+        
+        console.log('✅ Setting virtualAccount state...');
+        setVirtualAccount(normalizedAccount);
+        
+        console.log('✅ virtualAccount state set. Account should now display in UI.');
       } catch (error) {
         console.error('Error creating virtual account:', error);
         
         // Provide specific error messages based on error type
         let errorMessage = error.message || 'Failed to create virtual account. Please try again or use a different payment method.';
         
-        if (error.message && (error.message.includes('Unauthorized') || error.message.includes('401') || error.message.includes('session has expired'))) {
+        // Check for Flutterwave amount limit error
+        if (error.message && (error.message.includes('500,000') || error.message.includes('500000') || error.message.includes('amount should be between'))) {
+          errorMessage = `Bank transfer is limited to ₦500,000 per transaction.\n\nBooking amount: ₦${totalAmount.toLocaleString()}\n\nPlease use card payment for this booking.`;
+        } else if (error.message && (error.message.includes('Unauthorized') || error.message.includes('401') || error.message.includes('session has expired'))) {
           errorMessage = 'Your session has expired or you are not logged in. Please sign out and sign in again.';
         } else if (error.message && error.message.includes('Network error')) {
           errorMessage = 'Network error. Please check your connection and try again.';
+        } else if (error.message && (error.message.includes('Flutterwave') || error.message.includes('credentials') || error.message.includes('500'))) {
+          errorMessage = 'Payment service is temporarily unavailable. Please try:\n\n' +
+            '1. Use card payment instead\n' +
+            '2. Try again in a few minutes\n' +
+            '3. Contact support if the issue persists';
         }
         
-        // Show error but don't block the screen - user can still see the amount
+        // Set error state for UI display
+        setVirtualAccountError(errorMessage);
+        
+        // Show error but don't block the screen - user can still see the amount and try card payment
         Alert.alert(
-          'Virtual Account Error',
+          'Payment Service Unavailable',
           errorMessage,
-          [{ text: 'OK' }]
+          [
+            { text: 'OK' },
+            { 
+              text: 'Use Card Instead', 
+              onPress: () => navigation.navigate('CardPayment', {
+                apartment,
+                totalAmount,
+                checkInDate,
+                checkOutDate,
+                numberOfDays,
+                numberOfGuests,
+                paymentProvider: 'flutterwave',
+              })
+            }
+          ]
         );
       } finally {
         setLoadingAccount(false);
@@ -198,8 +298,86 @@ export default function TransferPaymentScreen() {
         return;
       }
 
-      // Payment is confirmed - send emails IMMEDIATELY
-      // Get user profile information for host email
+      // CRITICAL: Verify payment and automatically fund wallet
+      // Poll for payment verification since bank transfers may take time
+      if (txRef && totalAmount) {
+        console.log('🔄 Starting payment verification and wallet funding...');
+        console.log('📋 Transaction reference:', txRef);
+        
+        // Show loading state
+        Alert.alert(
+          'Verifying Payment',
+          'Please wait while we verify your bank transfer and fund your wallet...',
+          [{ text: 'OK' }]
+        );
+
+        // Poll for payment verification (bank transfers may take a few seconds)
+        let verificationAttempts = 0;
+        const maxVerificationAttempts = 10; // Try for up to 30 seconds (3s intervals)
+        let verificationSuccess = false;
+        let verificationResult = null; // Store result for later use
+
+        while (verificationAttempts < maxVerificationAttempts && !verificationSuccess) {
+          try {
+            console.log(`🔄 Verification attempt ${verificationAttempts + 1}/${maxVerificationAttempts}...`);
+            
+            verificationResult = await verifyAndFundWallet(
+              txRef,
+              user.email,
+              totalAmount,
+              'bank_transfer'
+            );
+            
+            if (verificationResult.verified && verificationResult.funded) {
+              verificationSuccess = true;
+              console.log('✅ Payment verified and wallet funded successfully!');
+              console.log('✅ Updated balance:', verificationResult.balance);
+              
+              // Wallet top-up email is already sent by verifyAndFundWallet
+              // No need to send it again here
+              
+              Alert.alert(
+                'Payment Verified',
+                `Your bank transfer of ₦${totalAmount.toLocaleString()} has been verified and added to your wallet! A confirmation email has been sent to your email address.`,
+                [{ text: 'OK' }]
+              );
+              break;
+            }
+          } catch (verifyError) {
+            console.log(`⚠️ Verification attempt ${verificationAttempts + 1} failed:`, verifyError.message);
+            
+            // If it's a "payment not found" or "pending" error, keep trying
+            if (verifyError.message && (
+              verifyError.message.includes('not found') || 
+              verifyError.message.includes('pending') ||
+              verifyError.message.includes('processing')
+            )) {
+              verificationAttempts++;
+              if (verificationAttempts < maxVerificationAttempts) {
+                // Wait 3 seconds before next attempt
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                continue;
+              }
+            } else {
+              // For other errors, log but continue with booking
+              console.warn('⚠️ Verification error (non-fatal):', verifyError);
+              break;
+            }
+          }
+        }
+
+        if (!verificationSuccess) {
+          console.warn('⚠️ Payment verification timed out or failed, but continuing with booking');
+          // This is normal for bank transfers - they may take time to process
+          Alert.alert(
+            'Payment Processing',
+            'Your bank transfer is being processed. The wallet will be funded automatically once the transfer is confirmed by the bank (usually within 1-5 minutes).\n\nYou can check your wallet balance to see when the payment is credited.',
+            [{ text: 'OK' }]
+          );
+        }
+      }
+
+      // Get user profile information for emails
       let userName = user?.name || 'Guest';
       let userPhone = null;
       let userAddress = null;
@@ -227,30 +405,77 @@ export default function TransferPaymentScreen() {
         numberOfDays: numberOfDays || 1,
         numberOfGuests: numberOfGuests || 1,
         totalAmount: totalAmount || 0,
-        paymentMethod: 'Bank Transfer',
-        status: 'Pending',
+        paymentMethod: 'Bank Transfer (Flutterwave)',
+        status: verificationSuccess ? 'Confirmed' : 'Pending', // Update status based on verification
         bookingDate: new Date().toISOString(),
         hostEmail: apartment?.hostEmail || apartment?.createdBy || null, // Store host email for rating verification
         hostName: apartment?.hostName || null,
         txRef: txRef || null, // Store transaction reference for webhook matching
+        paymentReference: txRef || null, // Payment reference for receipt (Flutterwave transaction reference)
+        transactionId: txRef || null, // Transaction ID for receipt
       };
 
-      // Send booking confirmation emails IMMEDIATELY after payment confirmation
-      // Get host email - will be normalized later for wallet funding
+      // CRITICAL: Only send booking confirmation emails if payment was successfully verified
+      // This ensures guests and hosts only receive emails when payment is actually confirmed
       let hostEmail = apartment?.hostEmail || apartment?.createdBy || null;
-      console.log('📧 Sending booking confirmation emails immediately after payment confirmation...');
-      try {
-        await sendBookingEmails(
-          user.email,
-          userName,
-          hostEmail,
-          bookingData,
-          userPhone,
-          userAddress
-        );
-      } catch (emailError) {
-        console.error('❌ Error sending booking confirmation emails:', emailError);
-        // Don't block payment flow if email fails
+      
+      if (verificationSuccess) {
+        console.log('📧 Payment verified successfully - sending booking confirmation emails with receipt...');
+        
+        // Get wallet balance for guest email (wallet was funded)
+        let guestWalletBalance = null;
+        let topUpAmount = null;
+        if (verificationResult?.balance) {
+          topUpAmount = totalAmount;
+          guestWalletBalance = verificationResult.balance;
+        }
+        
+        try {
+          // Import individual email functions to ensure proper receipt emails
+          const { sendUserBookingConfirmationEmail, sendHostBookingNotificationEmail } = await import('../utils/emailService');
+          
+          // Send guest email with booking details, receipt, and wallet top-up information
+          await sendUserBookingConfirmationEmail(
+            user.email,
+            bookingData,
+            userName,
+            topUpAmount, // Wallet top-up amount
+            guestWalletBalance // New wallet balance
+          );
+          console.log('✅ Guest booking confirmation email with receipt sent to:', user.email);
+          
+          // Send host email with booking details and receipt
+          if (hostEmail) {
+            // Calculate fees for receipt
+            const cleaningFee = 0; // Fixed cleaning fee: ₦0
+            const serviceFee = 0; // Fixed service fee: ₦0
+            const totalServiceFees = cleaningFee + serviceFee;
+            const hostPaymentAmount = Math.max(0, (totalAmount || 0) - totalServiceFees);
+            
+            await sendHostBookingNotificationEmail(
+              hostEmail,
+              bookingData,
+              userName,
+              user.email,
+              userPhone,
+              userAddress
+            );
+            console.log('✅ Host booking notification email with receipt sent to:', hostEmail);
+          } else {
+            console.warn('⚠️ Cannot send host email: Host email not found');
+          }
+        } catch (emailError) {
+          console.error('❌ Error sending booking confirmation emails:', emailError);
+          // Don't block payment flow if email fails, but log the error
+          Alert.alert(
+            'Email Error',
+            'Payment was successful, but there was an issue sending confirmation emails. Your booking has been saved and you will receive an email shortly.',
+            [{ text: 'OK' }]
+          );
+        }
+      } else {
+        console.log('⚠️ Payment not yet verified - emails will be sent when payment is confirmed via webhook');
+        // Payment not verified yet - webhook will handle email sending when payment is confirmed
       }
       try {
         await hybridBookingService.createBooking(user.email, bookingData);
@@ -262,12 +487,18 @@ export default function TransferPaymentScreen() {
       
       // CRITICAL: Also store booking for the host (even if host is not signed in)
       // This ensures hosts can see bookings when they sign in later
+      // Normalize host email BEFORE storing to ensure consistent retrieval
       if (hostEmail) {
         try {
+          // Normalize host email to ensure it matches when host views bookings
+          const normalizedHostEmail = hostEmail.toLowerCase().trim();
+          
           const hostBookingData = {
             ...bookingData,
             userEmail: user.email, // Guest's email
             userName: userName, // Guest's name
+            guestEmail: user.email, // Explicitly set guest email
+            guestName: userName,    // Explicitly set guest name
             // Include all booking details for host
             apartmentId: bookingData.apartmentId,
             title: bookingData.title,
@@ -282,21 +513,25 @@ export default function TransferPaymentScreen() {
             status: bookingData.status,
             bookingDate: bookingData.bookingDate,
             hostPaymentAmount: hostPaymentAmount, // Amount host receives (minus fees)
+            hostEmail: normalizedHostEmail, // Store normalized email
           };
-          await addHostBooking(hostEmail, hostBookingData);
-          console.log(`✅ Booking stored for host: ${hostEmail}`);
+          await addHostBooking(normalizedHostEmail, hostBookingData);
+          console.log(`✅ Booking stored for host: ${normalizedHostEmail} (normalized from ${hostEmail})`);
         } catch (hostBookingError) {
           console.error('Error storing booking for host:', hostBookingError);
           // Don't block payment flow if host booking storage fails
         }
+      } else {
+        console.warn('⚠️ Cannot store host booking: Host email not found');
+        console.warn('Apartment data:', { hostEmail: apartment?.hostEmail, createdBy: apartment?.createdBy });
       }
 
       // Fund host's wallet with payment amount minus fees
-      // CRITICAL: Host receives totalAmount MINUS cleaningFee (₦2,500) MINUS serviceFee (₦3,000)
+      // CRITICAL: Host receives totalAmount MINUS cleaningFee MINUS serviceFee
       // Formula: hostPaymentAmount = totalAmount - cleaningFee - serviceFee
       // This ensures host gets the base price only, not the fees
-      const cleaningFee = 2500; // Fixed cleaning fee: ₦2,500
-      const serviceFee = 3000; // Fixed service fee: ₦3,000
+      const cleaningFee = 0; // Fixed cleaning fee: ₦0 (set to 0 until changed)
+      const serviceFee = 0; // Fixed service fee: ₦0 (set to 0 until changed)
       const totalPaid = totalAmount || 0;
       const hostPaymentAmount = totalPaid - cleaningFee - serviceFee;
       
@@ -466,21 +701,16 @@ export default function TransferPaymentScreen() {
                 <Text style={styles.errorButtonText}>Go to Login</Text>
               </TouchableOpacity>
             </View>
-          ) : virtualAccount ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color="#FFD700" />
-              <Text style={styles.loadingText}>Generating virtual account...</Text>
-            </View>
-          ) : virtualAccount ? (
+          ) : virtualAccount && virtualAccount.accountNumber ? (
             <>
               <View style={styles.accountDetail}>
                 <Text style={styles.detailLabel}>Bank</Text>
-                <Text style={styles.detailValue}>{virtualAccount.bankName}</Text>
+                <Text style={styles.detailValue}>{virtualAccount.bankName || 'Virtual Bank'}</Text>
               </View>
 
               <View style={styles.accountDetail}>
                 <Text style={styles.detailLabel}>Account Name</Text>
-                <Text style={styles.detailValue}>{virtualAccount.accountName}</Text>
+                <Text style={styles.detailValue}>{virtualAccount.accountName || 'Nigerian Apartments Leasing Ltd'}</Text>
               </View>
 
               <View style={styles.accountDetail}>
@@ -718,6 +948,19 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#FF6B6B',
     lineHeight: 20,
+  },
+  errorButton: {
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: '#FFD700',
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  errorButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
   },
   modalOverlay: {
     flex: 1,

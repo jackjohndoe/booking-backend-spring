@@ -187,8 +187,9 @@ export const updateWalletBalance = async (userEmail, newBalance) => {
  * @param {string} method - Payment method
  * @param {string} senderName - Name of the person sending the funds (optional)
  * @param {string} senderEmail - Email of the person sending the funds (optional)
+ * @param {string} paymentReference - Paystack payment reference (optional)
  */
-export const addFunds = async (userEmail, amount, method = 'Bank Transfer', senderName = null, senderEmail = null) => {
+export const addFunds = async (userEmail, amount, method = 'Bank Transfer', senderName = null, senderEmail = null, paymentReference = null) => {
   try {
     if (!userEmail) {
       throw new Error('User email is required');
@@ -258,6 +259,7 @@ export const addFunds = async (userEmail, amount, method = 'Bank Transfer', send
       method: method || 'Bank Transfer',
       senderName: senderName || null, // Explicitly include sender name for recipient visibility
       senderEmail: senderEmail || null, // Explicitly include sender email for recipient visibility
+      paymentReference: paymentReference || null, // Paystack payment reference for tracking
       ...transactionMetadata, // Also include in metadata for consistency
     });
     
@@ -377,6 +379,41 @@ export const addTransaction = async (userEmail, transaction) => {
     
     // VALIDATION: Ensure userEmail is valid
     const normalizedEmail = userEmail.toLowerCase().trim();
+    
+    // Check for duplicates before adding
+    const existingTransactions = await getTransactions(normalizedEmail);
+    const transactionRef = transaction.reference || transaction.paymentReference || transaction.id;
+    
+    if (transactionRef) {
+      const duplicate = existingTransactions.find(
+        t => (t.reference || t.paymentReference || t.id) === transactionRef
+      );
+      if (duplicate) {
+        console.log(`ℹ️ Transaction ${transactionRef} already exists, updating instead of creating duplicate`);
+        // Update existing transaction with new data (prefer new data but keep old metadata)
+        const updatedTransaction = {
+          ...duplicate,
+          ...transaction,
+          id: duplicate.id, // Preserve original ID
+          userEmail: normalizedEmail,
+          // Ensure reference fields are preserved/updated
+          reference: transaction.reference || duplicate.reference || transactionRef,
+          paymentReference: transaction.paymentReference || duplicate.paymentReference || transactionRef,
+          // Update timestamp to reflect modification
+          updatedAt: new Date().toISOString(),
+          // Preserve original creation date
+          createdAt: duplicate.createdAt || duplicate.date || new Date().toISOString(),
+        };
+        // Update in storage
+        const key = getUserStorageKey('walletTransactions', normalizedEmail);
+        const updatedTransactions = existingTransactions.map(t => 
+          (t.reference || t.paymentReference || t.id) === transactionRef ? updatedTransaction : t
+        );
+        await AsyncStorage.setItem(key, JSON.stringify(updatedTransactions));
+        console.log(`✅ Transaction ${transactionRef} updated successfully`);
+        return updatedTransaction;
+      }
+    }
     if (!normalizedEmail || normalizedEmail.length === 0) {
       throw new Error('Invalid user email - cannot create transaction');
     }
@@ -384,12 +421,21 @@ export const addTransaction = async (userEmail, transaction) => {
     const transactions = await getTransactions(normalizedEmail);
     
     // Create transaction with user email embedded for additional security
+    // CRITICAL: Ensure transaction has proper reference for tracking
+    const transactionId = `txn_${normalizedEmail.replace(/[^a-z0-9]/g, '_')}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const newTransaction = {
-      id: `txn_${normalizedEmail.replace(/[^a-z0-9]/g, '_')}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: transactionId,
       userEmail: normalizedEmail, // Embed user email in transaction for validation
       ...transaction,
+      // Ensure reference is set (use paymentReference, reference, or id as fallback)
+      reference: transaction.reference || transaction.paymentReference || transactionId,
+      paymentReference: transaction.paymentReference || transaction.reference || transactionId,
       date: new Date().toISOString(),
       timestamp: Date.now(),
+      // Store creation date for tracking
+      createdAt: new Date().toISOString(),
+      // Store last update date
+      updatedAt: new Date().toISOString(),
     };
     
     // CRITICAL: Filter out any transactions that don't belong to this user

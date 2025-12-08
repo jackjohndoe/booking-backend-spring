@@ -7,6 +7,7 @@ import { favoriteService } from './favoriteService';
 import { getBookings, addBooking } from '../utils/bookings';
 import { getListings, addListing, deleteListing } from '../utils/listings';
 import { getWalletBalance, getTransactions, addFunds, makePayment } from '../utils/wallet';
+import { queueListingForSync, getPendingSyncListings, removeFromSyncQueue } from './listingSyncService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Helper to check if API is available
@@ -167,7 +168,7 @@ const formatListingsForExplore = (listings) => {
   }));
 };
 
-// Helper to merge user listings with API/cached apartments (new listings at top)
+// Helper to merge API listings with local listings (API first, then local-only)
 const mergeWithUserListings = async (apiApartments = [], userListings = null) => {
   try {
     // Get user listings if not provided
@@ -175,46 +176,63 @@ const mergeWithUserListings = async (apiApartments = [], userListings = null) =>
       userListings = await getListings();
     }
     
-    // Format user listings for ExploreScreen - these always go at the top
-    const formattedUserListings = userListings && userListings.length > 0 
-      ? formatListingsForExplore(userListings) 
-      : [];
-    
-    console.log('Formatted user listings:', formattedUserListings.length);
-    
-    // Format API apartments
+    // Format API apartments FIRST (these are from ALL devices - cross-platform)
     const formattedApiApartments = apiApartments && apiApartments.length > 0
       ? formatListingsForExplore(apiApartments)
       : [];
     
-    // Create a map of user listing IDs to ensure they're always included
-    const userListingIds = new Set(formattedUserListings.map(listing => listing.id));
+    // Get pending sync listings (local-only listings that haven't been synced yet)
+    const pendingSync = await getPendingSyncListings();
+    const pendingLocalIds = new Set(pendingSync.map(p => p.localId));
     
-    // Filter out API apartments that are duplicates of user listings
-    const uniqueApiApartments = formattedApiApartments.filter(apt => !userListingIds.has(apt.id));
+    // Format local listings (only include those that are pending sync)
+    const localOnlyListings = userListings && userListings.length > 0
+      ? userListings.filter(listing => {
+          const listingId = listing.id || listing._id || String(listing.id);
+          return pendingLocalIds.has(listingId);
+        })
+      : [];
     
-    // Combine: user listings first (sorted by most recent), then API apartments (sorted by most recent)
-    // User listings always appear at the top
-    const sortedUserListings = formattedUserListings.sort((a, b) => {
-      const dateA = new Date(a.createdAt || 0);
-      const dateB = new Date(b.createdAt || 0);
+    const formattedLocalListings = localOnlyListings.length > 0
+      ? formatListingsForExplore(localOnlyListings)
+      : [];
+    
+    // Create a set of API listing IDs for deduplication
+    const apiListingIds = new Set(formattedApiApartments.map(apt => {
+      const id = apt.id || apt._id || String(apt.id);
+      return id;
+    }));
+    
+    // Filter out local listings that already exist in API (prefer API version)
+    const uniqueLocalListings = formattedLocalListings.filter(listing => {
+      const listingId = listing.id || listing._id || String(listing.id);
+      return !apiListingIds.has(listingId);
+    });
+    
+    // Sort both arrays by most recent first
+    const sortedApiApartments = formattedApiApartments.sort((a, b) => {
+      const dateA = new Date(a.createdAt || a.updatedAt || 0);
+      const dateB = new Date(b.createdAt || b.updatedAt || 0);
       return dateB - dateA; // Most recent first
     });
     
-    const sortedApiApartments = uniqueApiApartments.sort((a, b) => {
-      const dateA = new Date(a.createdAt || 0);
-      const dateB = new Date(b.createdAt || 0);
+    const sortedLocalListings = uniqueLocalListings.sort((a, b) => {
+      const dateA = new Date(a.createdAt || a.updatedAt || 0);
+      const dateB = new Date(b.createdAt || b.updatedAt || 0);
       return dateB - dateA; // Most recent first
     });
     
-    // User listings at top, then API apartments
-    const result = [...sortedUserListings, ...sortedApiApartments];
-    console.log('Final merged result:', result.length, 'User:', sortedUserListings.length, 'API:', sortedApiApartments.length);
+    // Combine: API listings first (cross-platform), then local-only listings (pending sync)
+    const result = [...sortedApiApartments, ...sortedLocalListings];
+    console.log('Final merged result:', result.length, 'API:', sortedApiApartments.length, 'Local-only:', sortedLocalListings.length);
     return result;
   } catch (error) {
     console.error('Error merging listings:', error);
-    // Fallback: return user listings if available, otherwise API apartments
+    // Fallback: return API apartments if available, otherwise local listings
     try {
+      if (apiApartments && apiApartments.length > 0) {
+        return formatListingsForExplore(apiApartments);
+      }
       const userListings = await getListings();
       if (userListings && userListings.length > 0) {
         return formatListingsForExplore(userListings);
@@ -222,7 +240,7 @@ const mergeWithUserListings = async (apiApartments = [], userListings = null) =>
     } catch (fallbackError) {
       console.error('Fallback error:', fallbackError);
     }
-    return formatListingsForExplore(apiApartments);
+    return [];
   }
 };
 
@@ -282,41 +300,49 @@ const removeFromCachedApartments = async (listingId) => {
 export const hybridApartmentService = {
   getApartments: async (filters = {}) => {
     try {
-      // Always get all listings first (global - visible to all users)
-      const allListings = await getListings();
-      console.log('All listings loaded (global):', allListings.length);
-      
-      // Try to get API apartments
+      // PRIORITY 1: Fetch from API first (these contain listings from ALL devices/users)
+      // This ensures cross-platform visibility (iOS users see Android listings and vice versa)
       let apiApartments = [];
       try {
         const apartments = await apartmentService.getApartments(filters);
         if (apartments !== null && apartments !== undefined) {
-          apiApartments = Array.isArray(apartments) ? apartments : (apartments.data || apartments || []);
-          // Cache API apartments separately (don't overwrite user listings)
+          apiApartments = Array.isArray(apartments) ? apartments : [];
+          // Cache API apartments for offline access
           if (apiApartments.length > 0) {
             await AsyncStorage.setItem('cached_api_apartments', JSON.stringify(apiApartments));
+            console.log('✅ Loaded', apiApartments.length, 'listings from API (cross-platform)');
           }
         }
       } catch (apiError) {
+        console.log('⚠️ API fetch failed, using cached listings:', apiError.message);
         // If API fails, try to load cached API apartments
         try {
           const cached = await AsyncStorage.getItem('cached_api_apartments');
           if (cached) {
             apiApartments = JSON.parse(cached);
+            console.log('✅ Using cached API listings:', apiApartments.length);
           }
         } catch (cacheError) {
           console.log('No cached API apartments available');
         }
       }
       
-      // Merge: global listings first (most recent at top), then API apartments
+      // PRIORITY 2: Get local-only listings (those pending sync)
+      const allListings = await getListings();
+      
+      // Merge: API listings first (cross-platform), then local-only listings (pending sync)
       const merged = await mergeWithUserListings(apiApartments, allListings);
-      console.log('Merged apartments:', merged.length, 'Global listings:', allListings.length);
+      console.log('✅ Merged apartments:', merged.length, 'API:', apiApartments.length, 'Local-only:', allListings.length);
       return merged;
     } catch (error) {
       console.error('Error getting apartments:', error);
-      // Fallback: try to get all listings - they should always be available
+      // Fallback: try cached API listings first, then local listings
       try {
+        const cached = await AsyncStorage.getItem('cached_api_apartments');
+        if (cached) {
+          const apiApartments = JSON.parse(cached);
+          return formatListingsForExplore(apiApartments);
+        }
         const allListings = await getListings();
         if (allListings && allListings.length > 0) {
           return formatListingsForExplore(allListings);
@@ -337,82 +363,57 @@ export const hybridApartmentService = {
       try {
         const apartments = await apartmentService.getApartments();
         if (apartments !== null && apartments !== undefined) {
-          apiApartments = Array.isArray(apartments) ? apartments : (apartments.data || apartments || []);
+          apiApartments = Array.isArray(apartments) ? apartments : [];
           
-          // IMPORTANT: Sync API apartments to local storage so they're available offline
-          // This ensures all users see listings from all devices
+          // Cache API apartments for offline access
           if (apiApartments.length > 0) {
             await AsyncStorage.setItem('cached_api_apartments', JSON.stringify(apiApartments));
-            
-            // Also merge API apartments into allListings for offline access
-            // This ensures new users see listings even if API is temporarily unavailable
-            try {
-              const existingListings = await getListings();
-              const existingIds = new Set(existingListings.map(l => l.id));
-              
-              // Add API apartments that don't exist locally
-              const newListings = apiApartments.filter(apt => {
-                const aptId = apt.id || apt._id || String(apt.id);
-                return !existingIds.has(aptId);
-              });
-              
-              if (newListings.length > 0) {
-                const updatedListings = [...existingListings, ...newListings];
-                await AsyncStorage.setItem('allListings', JSON.stringify(updatedListings));
-                console.log('Synced', newListings.length, 'API apartments to local storage for offline access');
-              }
-            } catch (syncError) {
-              console.log('Could not sync API apartments to local storage:', syncError);
-              // Continue - API apartments are still cached separately
-            }
+            console.log('✅ Loaded', apiApartments.length, 'API listings (cross-platform)');
           }
         }
       } catch (apiError) {
+        console.log('⚠️ API fetch failed, using cached listings:', apiError.message);
         // If API fails, try cached API apartments (from previous successful fetch)
         try {
           const cached = await AsyncStorage.getItem('cached_api_apartments');
           if (cached) {
             apiApartments = JSON.parse(cached);
-            console.log('Using cached API apartments:', apiApartments.length);
+            console.log('✅ Using cached API listings:', apiApartments.length);
           }
         } catch (cacheError) {
           console.log('No cached API apartments available');
         }
       }
       
-      // PRIORITY 2: Get local listings (these are listings created on this device)
-      // These are merged with API apartments to ensure nothing is lost
-      let allListings = [];
-      try {
-        allListings = await getListings();
-        console.log('All apartments - Global listings:', allListings.length);
-      } catch (listingsError) {
-        console.error('Error loading global listings:', listingsError);
-        allListings = [];
-      }
+      // PRIORITY 2: Get local listings (include ALL local listings for immediate visibility)
+      // This ensures newly created listings appear immediately even if they're saved to API
+      // Deduplication will happen later - API listings take priority
+      const allListings = await getListings();
       
-      // Format API apartments FIRST (these contain listings from ALL devices/users)
-      // This ensures cross-platform visibility
+      // Include ALL local listings - deduplication happens later where API takes priority
+      // This ensures newly created listings appear immediately on homepage
+      const localOnlyListings = allListings;
+      
+      // Format API apartments FIRST (these are from ALL devices - cross-platform)
       const formattedApiApartments = apiApartments && apiApartments.length > 0
         ? formatListingsForExplore(apiApartments)
         : [];
       
-      // Format local listings (listings created on this device)
-      const formattedUserListings = allListings && allListings.length > 0
-        ? formatListingsForExplore(allListings)
+      // Format local-only listings (listings created on this device, pending sync)
+      const formattedLocalListings = localOnlyListings && localOnlyListings.length > 0
+        ? formatListingsForExplore(localOnlyListings)
         : [];
       
       // Get default apartments (these are the hardcoded ones in ExploreScreen)
       // ALWAYS include these as base listings for new users
       const defaultApartments = getDefaultApartments();
       
-      // Combine all: API apartments first (most recent, from all devices), then local listings, then defaults
-      // This ensures all users see listings from all devices (iPhone/Android)
+      // Combine all: API apartments first (cross-platform), then local-only listings, then defaults
+      // Deduplication: prefer API version if both exist
       const allIds = new Set();
       const combined = [];
       
       // PRIORITY 1: Add API apartments first (these are from ALL devices - cross-platform)
-      // These are sorted by most recent and contain listings from iPhone, Android, etc.
       formattedApiApartments.forEach(apt => {
         const aptId = apt.id || apt._id || String(apt.id);
         if (!allIds.has(aptId)) {
@@ -421,9 +422,9 @@ export const hybridApartmentService = {
         }
       });
       
-      // PRIORITY 2: Add local listings (avoid duplicates with API apartments)
-      // These are listings created on this specific device
-      formattedUserListings.forEach(listing => {
+      // PRIORITY 2: Add local-only listings (avoid duplicates with API apartments)
+      // These are listings created on this device that haven't synced yet
+      formattedLocalListings.forEach(listing => {
         const listingId = listing.id || listing._id || String(listing.id);
         if (!allIds.has(listingId)) {
           allIds.add(listingId);
@@ -432,7 +433,6 @@ export const hybridApartmentService = {
       });
       
       // PRIORITY 3: Add default apartments (avoid duplicates) - these are always shown
-      // These ensure new users see at least some listings immediately
       defaultApartments.forEach(apt => {
         if (!allIds.has(apt.id)) {
           allIds.add(apt.id);
@@ -441,22 +441,27 @@ export const hybridApartmentService = {
       });
       
       // Sort by most recent first (all listings, regardless of source)
-      // This ensures newest listings appear at the top for all users
       combined.sort((a, b) => {
         const dateA = new Date(a.createdAt || a.updatedAt || 0);
         const dateB = new Date(b.createdAt || b.updatedAt || 0);
         return dateB - dateA; // Most recent first
       });
       
-      console.log('All apartments combined:', combined.length, 'API apartments:', formattedApiApartments.length, 'Local listings:', formattedUserListings.length);
+      console.log('✅ All apartments combined:', combined.length, 'API:', formattedApiApartments.length, 'Local-only:', formattedLocalListings.length);
       
-      // ALWAYS return at least default apartments (even if empty, should have defaults)
-      // This ensures new users see listings immediately upon signup
+      // ALWAYS return at least default apartments
       return combined.length > 0 ? combined : defaultApartments;
     } catch (error) {
       console.error('Error getting all apartments:', error);
-      // Fallback: return default apartments + global listings if possible
+      // Fallback: try cached API listings first, then local listings, then defaults
       try {
+        const cached = await AsyncStorage.getItem('cached_api_apartments');
+        if (cached) {
+          const apiApartments = JSON.parse(cached);
+          const formatted = formatListingsForExplore(apiApartments);
+          const defaults = getDefaultApartments();
+          return [...formatted, ...defaults];
+        }
         const allListings = await getListings();
         const formattedUserListings = allListings && allListings.length > 0
           ? formatListingsForExplore(allListings)
@@ -497,38 +502,72 @@ export const hybridApartmentService = {
       try {
         apiResult = await apartmentService.createApartment(apartmentData);
         if (apiResult !== null && apiResult !== undefined) {
-          console.log('Listing saved to API - visible to all users on all devices:', apiResult.id || apiResult._id);
+          console.log('✅ Listing saved to API - visible to all users on all devices:', apiResult.id || apiResult._id);
           
-          // Also save to local storage for offline access
+          // CRITICAL: Also save locally so it appears immediately on homepage
+          // Even though API save succeeded, we save locally to ensure immediate visibility
+          // The local version will be replaced by API version on next fetch
           try {
-            await addListing(apartmentData);
-            console.log('Listing also saved locally for offline access');
+            // Format API result for local storage (use API ID if available)
+            const localListingData = {
+              ...apartmentData,
+              id: apiResult.id || apiResult._id || apartmentData.id,
+              _id: apiResult._id || apiResult.id || apartmentData._id,
+            };
+            const localListing = await addListing(localListingData);
+            console.log('✅ Listing also saved locally for immediate visibility:', localListing.id);
           } catch (localError) {
-            console.log('Local save failed, but API save succeeded:', localError);
-            // Continue - API save is more important for cross-platform visibility
+            console.warn('⚠️ Could not save listing locally (non-fatal):', localError.message);
+            // Continue - API save succeeded, listing will appear on next API fetch
+          }
+          
+          // CRITICAL: Clear API cache so new listing appears immediately
+          // This forces getAllApartmentsForExplore to refetch from API
+          try {
+            await AsyncStorage.removeItem('cached_api_apartments');
+            console.log('✅ Cleared API cache - new listing will appear on next load');
+          } catch (cacheError) {
+            console.warn('⚠️ Could not clear API cache (non-fatal):', cacheError.message);
           }
           
           return apiResult;
         }
       } catch (apiError) {
-        console.log('API save failed, will use local storage:', apiError.message);
-        // Continue to local storage save
+        console.log('⚠️ API save failed, will save locally and queue for sync:', apiError.message);
+        // Continue to local storage save and queue for sync
       }
       
       // PRIORITY 2: Save to local storage (ensures listing appears even if API fails)
       // This ensures the listing appears on this device immediately
       const newListing = await addListing(apartmentData);
-      console.log('Listing saved to local storage:', newListing.id, newListing.title);
-      console.log('Note: This listing will only be visible on this device until API is available');
+      console.log('✅ Listing saved to local storage:', newListing.id, newListing.title);
+      
+      // Queue for automatic sync to API (will sync when connection is available)
+      try {
+        await queueListingForSync(newListing);
+        console.log('✅ Listing queued for automatic sync to API');
+      } catch (queueError) {
+        console.warn('⚠️ Could not queue listing for sync:', queueError);
+        // Continue - listing is saved locally
+      }
       
       // Return the locally saved listing - it will appear on ExploreScreen
+      // It will automatically sync to API in the background
       return newListing;
     } catch (error) {
       console.error('Error creating apartment:', error);
       // If addListing fails, try again
       try {
         const newListing = await addListing(apartmentData);
-        console.log('Listing saved on retry:', newListing.id);
+        console.log('✅ Listing saved on retry:', newListing.id);
+        
+        // Queue for sync
+        try {
+          await queueListingForSync(newListing);
+        } catch (queueError) {
+          console.warn('Could not queue listing for sync:', queueError);
+        }
+        
         return newListing;
       } catch (retryError) {
         console.error('Failed to save listing after retry:', retryError);
@@ -554,23 +593,81 @@ export const hybridApartmentService = {
 
   deleteApartment: async (listingId) => {
     try {
-      // Try to delete from API first
-      try {
-        await apartmentService.deleteApartment(listingId);
-      } catch (error) {
-        // API delete failed, continue with local deletion
-        console.log('API delete failed, using local deletion');
+      // Get current user email for local deletion
+      const getCurrentUserEmail = async () => {
+        try {
+          const userData = await AsyncStorage.getItem('user');
+          if (userData) {
+            const user = JSON.parse(userData);
+            return user.email || null;
+          }
+        } catch (error) {
+          console.error('Error getting current user email:', error);
+        }
+        return null;
+      };
+      
+      const userEmail = await getCurrentUserEmail();
+      
+      // Check if listing is in sync queue (local-only listing)
+      const pendingSync = await getPendingSyncListings();
+      const isPendingSync = pendingSync.some(p => p.localId === listingId);
+      
+      // If it's a pending sync listing, remove from queue first
+      if (isPendingSync) {
+        try {
+          await removeFromSyncQueue(listingId);
+          console.log('✅ Removed listing from sync queue:', listingId);
+        } catch (queueError) {
+          console.warn('Could not remove from sync queue:', queueError);
+        }
+      }
+      
+      // Try to delete from API
+      // Check if this listing exists in API by checking if ID is numeric or if it's in cached API listings
+      // Local listings have IDs like "listing_1234567890_abc123"
+      const listingIdStr = String(listingId);
+      const isLocalId = listingIdStr.startsWith('listing_');
+      const isNumericId = !isNaN(Number(listingId)) && Number(listingId) > 0;
+      
+      // Try API delete if it's a numeric ID (likely from API) or if it's not a local ID
+      if (isNumericId || (!isLocalId && listingIdStr.length < 50)) {
+        try {
+          // Convert to number if it's numeric (API expects numeric ID)
+          const apiId = isNumericId ? Number(listingId) : listingId;
+          await apartmentService.deleteApartment(apiId);
+          console.log('✅ Deleted listing from API:', apiId);
+        } catch (apiError) {
+          // Check if it's a 404 (listing doesn't exist in API) or other error
+          if (apiError.response?.status === 404) {
+            console.log('ℹ️ Listing not found in API (may be local-only), continuing with local deletion');
+          } else {
+            console.log('⚠️ API delete failed:', apiError.message);
+            // Continue with local deletion - don't fail completely
+          }
+        }
+      } else {
+        console.log('ℹ️ Listing appears to be local-only (ID format:', listingIdStr.substring(0, 20) + '...), skipping API delete');
       }
       
       // Always delete from local storage
-      await deleteListing(listingId);
+      try {
+        await deleteListing(listingId, userEmail);
+        console.log('✅ Deleted listing from local storage:', listingId);
+      } catch (localError) {
+        // If local deletion fails and it's not an API listing, throw error
+        if (!isNumericId && (isLocalId || listingIdStr.length >= 50)) {
+          throw localError;
+        }
+        console.warn('⚠️ Local deletion failed, but API deletion may have succeeded:', localError);
+      }
       
       // Remove from cached apartments so it disappears from ExploreScreen
       await removeFromCachedApartments(listingId);
       
       return { success: true };
     } catch (error) {
-      console.error('Error deleting apartment:', error);
+      console.error('❌ Error deleting apartment:', error);
       throw error;
     }
   },
@@ -609,62 +706,116 @@ export const hybridBookingService = {
   },
 };
 
-// Hybrid Wallet Service
+// Hybrid Wallet Service - API Only (Flutterwave Integration)
 export const hybridWalletService = {
   getBalance: async (userEmail) => {
     try {
-      const result = await walletService.getBalance();
-      // If API returns null, use fallback
-      if (result === null || result === undefined) {
-        throw new Error('API returned null');
+      if (!userEmail) {
+        console.warn('getBalance: No user email provided');
+        return 0;
       }
-      const balance = result.balance || result.amount || result;
-      // Update local storage with user-specific key
-      // Ensure integer value for precision with large amounts
-      if (balance !== null && balance !== undefined && userEmail) {
-        const integerBalance = Math.floor(parseFloat(balance));
-        const { getUserStorageKey } = await import('../utils/userStorage');
-        const key = getUserStorageKey('walletBalance', userEmail);
-        await AsyncStorage.setItem(key, integerBalance.toString());
-        return integerBalance;
+      
+      const normalizedEmail = userEmail.toLowerCase().trim();
+      
+      // Try API balance first
+      let apiBalance = 0;
+      try {
+        const result = await walletService.getBalance();
+        if (result !== null && result !== undefined) {
+          // Handle different response formats
+          let balance = null;
+          
+          if (typeof result === 'number') {
+            balance = result;
+          } else if (result && typeof result === 'object') {
+            balance = result.balance !== undefined ? result.balance : 
+                      result.amount !== undefined ? result.amount : 
+                      result.value !== undefined ? result.value : null;
+            
+            if (balance !== null && typeof balance === 'object') {
+              balance = balance.value !== undefined ? balance.value : 
+                       balance.amount !== undefined ? balance.amount : 
+                       balance.balance !== undefined ? balance.balance : null;
+            }
+          } else if (typeof result === 'string') {
+            balance = parseFloat(result);
+          }
+          
+          if (balance !== null && balance !== undefined) {
+            const parsed = parseFloat(balance);
+            if (!isNaN(parsed) && parsed >= 0) {
+              apiBalance = Math.floor(parsed);
+            }
+          }
+        }
+      } catch (apiError) {
+        console.warn('⚠️ Error fetching API balance (non-fatal):', apiError.message);
       }
-      throw new Error('Invalid balance');
+      
+      // If API balance is 0 or null, calculate from transactions
+      if (apiBalance === 0) {
+        try {
+          const { getTransactions } = await import('../utils/wallet');
+          const { calculateBalanceFromTransactions } = await import('../services/transactionSyncService');
+          const transactions = await getTransactions(normalizedEmail);
+          const calculatedBalance = calculateBalanceFromTransactions(transactions);
+          
+          if (calculatedBalance > 0) {
+            console.log(`✅ Calculated balance from transactions: ₦${calculatedBalance.toLocaleString()} (API returned 0)`);
+            return calculatedBalance;
+          }
+        } catch (calcError) {
+          console.warn('⚠️ Error calculating balance from transactions:', calcError.message);
+        }
+      }
+      
+      // Fallback to local balance if API balance is still 0
+      if (apiBalance === 0) {
+        try {
+          const { getWalletBalance } = await import('../utils/wallet');
+          const localBalance = await getWalletBalance(normalizedEmail);
+          if (localBalance > 0) {
+            console.log(`✅ Using local balance: ₦${localBalance.toLocaleString()} (API returned 0)`);
+            return localBalance;
+          }
+        } catch (localError) {
+          console.warn('⚠️ Error fetching local balance:', localError.message);
+        }
+      }
+      
+      console.log(`✅ Wallet balance: ₦${apiBalance.toLocaleString()} for ${userEmail}`);
+      return apiBalance;
     } catch (error) {
-      // Silent fallback - FRONTEND PRESERVED
-      return await getWalletBalance(userEmail);
+      console.error('Error getting wallet balance:', error);
+      // Final fallback to local balance
+      try {
+        const { getWalletBalance } = await import('../utils/wallet');
+        return await getWalletBalance(userEmail) || 0;
+      } catch (fallbackError) {
+        return 0;
+      }
     }
   },
 
-  fundWallet: async (userEmail, amount, method = 'bank_transfer', senderName = null, senderEmail = null) => {
+  fundWallet: async (userEmail, amount, method = 'bank_transfer', senderName = null, senderEmail = null, paymentReference = null) => {
     try {
-      // CRITICAL: Normalize user email to ensure consistent storage
       if (!userEmail) {
         throw new Error('User email is required for wallet funding');
       }
       const normalizedEmail = userEmail.toLowerCase().trim();
       
-      // Ensure amount is an integer for precision with large amounts
       const integerAmount = Math.floor(parseFloat(amount));
-      console.log(`💰 Funding wallet for: ${normalizedEmail}, Amount: ₦${integerAmount.toLocaleString()}, Method: ${method}, Sender: ${senderName || 'N/A'}`);
+      console.log(`💰 Funding wallet via Flutterwave: ${normalizedEmail}, Amount: ₦${integerAmount.toLocaleString()}, Method: ${method}, Reference: ${paymentReference || 'N/A'}`);
       
-      // Try API first
-      try {
-        const result = await walletService.fundWallet(integerAmount, method);
-        // If API returns null, use local storage
-        if (result === null || result === undefined) {
-          throw new Error('API returned null');
-        }
-        // Also update locally for offline access (using normalized email and integer amount)
-        const localBalance = await addFunds(normalizedEmail, integerAmount, method, senderName, senderEmail);
-        console.log(`✅ Wallet funded via API + local: ${normalizedEmail}, New balance: ₦${localBalance.toLocaleString()}`);
-        return { balance: localBalance, amount: localBalance };
-      } catch (apiError) {
-        // API failed, use local storage only (using normalized email and integer amount)
-        console.log(`⚠️ API funding failed, using local storage for: ${normalizedEmail}`);
-        const localBalance = await addFunds(normalizedEmail, integerAmount, method, senderName, senderEmail);
-        console.log(`✅ Wallet funded via local storage: ${normalizedEmail}, New balance: ₦${localBalance.toLocaleString()}`);
-        return { balance: localBalance, amount: localBalance };
+      // Call API with Flutterwave reference - wallet will be updated via webhook
+      const result = await walletService.fundWallet(integerAmount, method, paymentReference || null);
+      if (result === null || result === undefined) {
+        throw new Error('API returned null - wallet funding failed');
       }
+      
+      const balance = result.balance || result.amount || 0;
+      console.log(`✅ Wallet funding initiated: ${normalizedEmail}, New balance: ₦${balance.toLocaleString()}`);
+      return { balance: balance, amount: balance };
     } catch (error) {
       console.error(`❌ Error funding wallet for ${userEmail}:`, error);
       throw error;
@@ -678,103 +829,126 @@ export const hybridWalletService = {
         return [];
       }
       
-      // VALIDATION: Normalize user email
       const normalizedEmail = userEmail.toLowerCase().trim();
       if (!normalizedEmail || normalizedEmail.length === 0) {
         console.warn('getTransactions: Invalid user email - returning empty array');
         return [];
       }
       
-      // CRITICAL: Always use user-specific local storage to ensure transactions are exclusive
-      // This ensures each user only sees their own transactions
-      const { getTransactions } = await import('../utils/wallet');
-      const localTransactions = await getTransactions(normalizedEmail);
-      
-      // Try API to sync, but always return local transactions (user-specific)
+      // Get transactions from API
+      let apiTransactions = [];
       try {
         const result = await walletService.getTransactions();
         if (result !== null && result !== undefined) {
-          const apiTransactions = Array.isArray(result) ? result : (result.data || []);
-          
-          // CRITICAL: Filter API transactions to ensure they belong to this user ONLY
-          // Add userEmail to each transaction for validation
-          const userApiTransactions = apiTransactions
-            .filter(txn => {
-              // If transaction has userEmail, verify it matches
-              if (txn.userEmail) {
-                return txn.userEmail.toLowerCase().trim() === normalizedEmail;
-              }
-              // If no userEmail, add it for this user
-              return true;
-            })
-            .map(txn => ({
-              ...txn,
-              userEmail: normalizedEmail, // Ensure userEmail is set
-            }));
-          
-          // Update local storage with user-specific key (if API returns data)
-          if (userApiTransactions.length > 0) {
-            const { getUserStorageKey } = await import('../utils/userStorage');
-            const key = getUserStorageKey('walletTransactions', normalizedEmail);
-            await AsyncStorage.setItem(key, JSON.stringify(userApiTransactions));
-            console.log(`✅ Synced ${userApiTransactions.length} transactions from API for ${normalizedEmail}`);
-          }
-          
-          // Return API transactions if available, otherwise return local
-          return userApiTransactions.length > 0 ? userApiTransactions : localTransactions;
+          apiTransactions = Array.isArray(result) ? result : (result.data || []);
         }
       } catch (apiError) {
-        // API failed, use local storage only
-        console.log(`⚠️ API getTransactions failed, using local storage for: ${normalizedEmail}`);
+        console.warn('⚠️ Error fetching transactions from API (non-fatal):', apiError.message);
       }
       
-      // Always return local transactions (user-specific and exclusive)
-      console.log(`✅ Loaded ${localTransactions.length} transactions EXCLUSIVELY for ${normalizedEmail}`);
-      return localTransactions;
+      // Filter API transactions to ensure they belong to this user
+      const userApiTransactions = apiTransactions
+        .filter(txn => {
+          if (txn.userEmail) {
+            return txn.userEmail.toLowerCase().trim() === normalizedEmail;
+          }
+          // If no userEmail, assume it belongs to current user (from API)
+          return true;
+        })
+        .map(txn => ({
+          ...txn,
+          userEmail: normalizedEmail,
+        }));
+      
+      // Get local transactions as fallback
+      let localTransactions = [];
+      try {
+        const { getTransactions: getLocalTransactions } = await import('../utils/wallet');
+        localTransactions = await getLocalTransactions(normalizedEmail);
+      } catch (localError) {
+        console.warn('⚠️ Error fetching local transactions (non-fatal):', localError.message);
+      }
+      
+      // Merge API and local transactions
+      const { mergeTransactions } = await import('../services/transactionSyncService');
+      const mergedTransactions = mergeTransactions(userApiTransactions, localTransactions);
+      
+      // Verify all transactions have proper references
+      const transactionsWithoutRef = mergedTransactions.filter(t => !t.reference && !t.paymentReference && !t.id);
+      if (transactionsWithoutRef.length > 0) {
+        console.warn(`⚠️ Found ${transactionsWithoutRef.length} transactions without proper references for ${normalizedEmail}`);
+      }
+      
+      // Log transaction references for debugging
+      if (mergedTransactions.length > 0) {
+        const refs = mergedTransactions.slice(0, 5).map(t => t.reference || t.paymentReference || t.id || 'N/A').join(', ');
+        console.log(`📋 Sample transaction references: ${refs}${mergedTransactions.length > 5 ? '...' : ''}`);
+      }
+      
+      console.log(`✅ Loaded ${mergedTransactions.length} transactions for ${normalizedEmail} (${userApiTransactions.length} API + ${localTransactions.length} local, ${mergedTransactions.length - userApiTransactions.length - localTransactions.length} duplicates removed)`);
+      return mergedTransactions;
     } catch (error) {
-      console.error('Error in hybridWalletService.getTransactions:', error);
-      // Fallback to local storage - FRONTEND PRESERVED
-      // Always use user-specific local storage
-      const { getTransactions } = await import('../utils/wallet');
-      return await getTransactions(userEmail);
+      console.error('Error getting transactions:', error);
+      // Fallback to local transactions only
+      try {
+        const { getTransactions: getLocalTransactions } = await import('../utils/wallet');
+        return await getLocalTransactions(userEmail);
+      } catch (fallbackError) {
+        console.error('Fallback to local transactions also failed:', fallbackError);
+        return [];
+      }
     }
   },
 
   makePayment: async (userEmail, amount, description, bookingId = null) => {
     try {
-      const result = await walletService.makePayment(amount, description, bookingId);
-      // If API returns null, use local storage
-      if (result === null || result === undefined) {
-        throw new Error('API returned null');
+      if (!userEmail) {
+        throw new Error('User email is required for payment');
       }
-      // Also update locally for offline access
-      await makePayment(userEmail, amount, description);
+      
+      const result = await walletService.makePayment(amount, description, bookingId);
+      if (result === null || result === undefined) {
+        throw new Error('API returned null - payment failed');
+      }
+      
+      console.log(`✅ Payment processed via Flutterwave: ${userEmail}, Amount: ₦${amount.toLocaleString()}`);
       return result;
     } catch (error) {
-      // Silent fallback - FRONTEND PRESERVED
-      return await makePayment(userEmail, amount, description);
+      console.error('Error processing payment:', error);
+      throw error;
     }
   },
 
   withdrawFunds: async (userEmail, amount, method = 'Bank Transfer', accountDetails = '') => {
     try {
-      // Try API first if available
-      try {
-        const result = await walletService.withdrawFunds?.(amount, method, accountDetails);
-        if (result !== null && result !== undefined) {
-          // Also update locally for offline access
-          const { withdrawFunds: localWithdraw } = await import('../utils/wallet');
-          await localWithdraw(userEmail, amount, method, accountDetails);
-          return result;
-        }
-      } catch (apiError) {
-        console.log('API withdraw not available, using local storage');
+      if (!userEmail) {
+        throw new Error('User email is required for withdrawal');
       }
       
-      // Fallback to local storage
-      const { withdrawFunds: localWithdraw } = await import('../utils/wallet');
-      const newBalance = await localWithdraw(userEmail, amount, method, accountDetails);
-      return { balance: newBalance, amount: amount };
+      // Extract bank code and account number from accountDetails
+      // Format: "BANK_CODE:ACCOUNT_NUMBER" or just account number
+      let accountBank = null;
+      let accountNumber = accountDetails;
+      let beneficiaryName = null;
+      
+      if (accountDetails && accountDetails.includes(':')) {
+        const parts = accountDetails.split(':');
+        accountBank = parts[0];
+        accountNumber = parts[1];
+        if (parts.length > 2) {
+          beneficiaryName = parts[2];
+        }
+      }
+      
+      // Call API with Flutterwave transfer details
+      const result = await walletService.withdrawFunds?.(amount, method, accountDetails, accountBank, accountNumber, beneficiaryName);
+      if (result === null || result === undefined) {
+        throw new Error('API returned null - withdrawal failed');
+      }
+      
+      const balance = result.balance || result.amount || 0;
+      console.log(`✅ Withdrawal initiated via Flutterwave: ${userEmail}, Amount: ₦${amount.toLocaleString()}, New balance: ₦${balance.toLocaleString()}`);
+      return { balance: balance, amount: amount };
     } catch (error) {
       console.error('Error withdrawing funds:', error);
       throw error;
@@ -801,11 +975,32 @@ export const hybridWalletService = {
       throw error;
     }
   },
+
+  // Comprehensive sync of all transactions from backend
+  syncAllTransactions: async (userEmail) => {
+    try {
+      if (!userEmail) {
+        throw new Error('User email is required for transaction sync');
+      }
+      
+      const { syncAllTransactionsFromBackend } = await import('../services/transactionSyncService');
+      const result = await syncAllTransactionsFromBackend(userEmail);
+      
+      console.log(`✅ Comprehensive sync completed: ${result.transactions.length} transactions, Balance: ₦${result.balance.toLocaleString()}`);
+      return result;
+    } catch (error) {
+      console.error('Error in comprehensive transaction sync:', error);
+      throw error;
+    }
+  },
 };
 
 // Hybrid Favorite Service
 export const hybridFavoriteService = {
   addFavorite: async (apartmentId) => {
+    // Normalize apartment ID to string for consistent comparison
+    const normalizedId = String(apartmentId);
+    
     try {
       const result = await favoriteService.addFavorite(apartmentId);
       // If API returns null, just continue with local storage
@@ -816,30 +1011,45 @@ export const hybridFavoriteService = {
       // Silent - continue to local storage
     }
     // Always update local storage for immediate UI update - FRONTEND PRESERVED
-    // Get current user email
+    // Get current user email (or last user email if logged out)
+    let userEmail = null;
     const userData = await AsyncStorage.getItem('user');
     if (userData) {
       const user = JSON.parse(userData);
-      if (user.email) {
-        const { getUserFavorites, saveUserFavorites } = await import('../utils/userStorage');
-        const favorites = await getUserFavorites(user.email);
-        if (!favorites.includes(apartmentId)) {
-          favorites.push(apartmentId);
-          await saveUserFavorites(user.email, favorites);
-        }
-        return;
+      userEmail = user.email;
+    } else {
+      // If logged out, use last user email to persist favorites
+      const lastUserEmail = await AsyncStorage.getItem('lastUserEmail');
+      userEmail = lastUserEmail;
+    }
+    
+    if (userEmail) {
+      const { getUserFavorites, saveUserFavorites } = await import('../utils/userStorage');
+      const favorites = await getUserFavorites(userEmail);
+      // Normalize all existing favorites to strings for comparison
+      const normalizedFavorites = favorites.map(id => String(id));
+      if (!normalizedFavorites.includes(normalizedId)) {
+        normalizedFavorites.push(normalizedId);
+        await saveUserFavorites(userEmail, normalizedFavorites);
+        console.log('✅ Favorite added to local storage:', normalizedId, 'Total favorites:', normalizedFavorites.length, 'User:', userEmail);
       }
+      return;
     }
     // Fallback to old key for backward compatibility
     const favoritesJson = await AsyncStorage.getItem('favorites');
     const favorites = favoritesJson ? JSON.parse(favoritesJson) : [];
-    if (!favorites.includes(apartmentId)) {
-      favorites.push(apartmentId);
-      await AsyncStorage.setItem('favorites', JSON.stringify(favorites));
+    const normalizedFavorites = favorites.map(id => String(id));
+    if (!normalizedFavorites.includes(normalizedId)) {
+      normalizedFavorites.push(normalizedId);
+      await AsyncStorage.setItem('favorites', JSON.stringify(normalizedFavorites));
+      console.log('✅ Favorite added to local storage (fallback):', normalizedId, 'Total favorites:', normalizedFavorites.length);
     }
   },
 
   removeFavorite: async (apartmentId) => {
+    // Normalize apartment ID to string for consistent comparison
+    const normalizedId = String(apartmentId);
+    
     try {
       const result = await favoriteService.removeFavorite(apartmentId);
       // If API returns null, just continue with local storage
@@ -850,48 +1060,92 @@ export const hybridFavoriteService = {
       // Silent - continue to local storage
     }
     // Always update local storage - FRONTEND PRESERVED
-    // Get current user email
+    // Get current user email (or last user email if logged out)
+    let userEmail = null;
     const userData = await AsyncStorage.getItem('user');
     if (userData) {
       const user = JSON.parse(userData);
-      if (user.email) {
-        const { getUserFavorites, saveUserFavorites } = await import('../utils/userStorage');
-        const favorites = await getUserFavorites(user.email);
-        const updated = favorites.filter(id => id !== apartmentId);
-        await saveUserFavorites(user.email, updated);
-        return;
-      }
+      userEmail = user.email;
+    } else {
+      // If logged out, use last user email to persist favorites
+      const lastUserEmail = await AsyncStorage.getItem('lastUserEmail');
+      userEmail = lastUserEmail;
+    }
+    
+    if (userEmail) {
+      const { getUserFavorites, saveUserFavorites } = await import('../utils/userStorage');
+      const favorites = await getUserFavorites(userEmail);
+      // Normalize all favorites to strings and filter
+      const normalizedFavorites = favorites.map(id => String(id));
+      const updated = normalizedFavorites.filter(id => id !== normalizedId);
+      await saveUserFavorites(userEmail, updated);
+      console.log('✅ Favorite removed from local storage:', normalizedId, 'Remaining favorites:', updated.length, 'User:', userEmail);
+      return;
     }
     // Fallback to old key for backward compatibility
     const favoritesJson = await AsyncStorage.getItem('favorites');
     const favorites = favoritesJson ? JSON.parse(favoritesJson) : [];
-    const updated = favorites.filter(id => id !== apartmentId);
+    const normalizedFavorites = favorites.map(id => String(id));
+    const updated = normalizedFavorites.filter(id => id !== normalizedId);
     await AsyncStorage.setItem('favorites', JSON.stringify(updated));
+    console.log('✅ Favorite removed from local storage (fallback):', normalizedId, 'Remaining favorites:', updated.length);
   },
 
   getFavorites: async () => {
+    // Always try to get favorites from local storage first (fast, works offline)
+    // Then try API to sync, but don't fail if API fails
+    let userEmail = null;
     try {
-      const result = await favoriteService.getFavorites();
-      // If API returns null, use fallback
-      if (result === null || result === undefined) {
-        throw new Error('API returned null');
-      }
-      return Array.isArray(result) ? result : (result.data || []);
-    } catch (error) {
-      // Silent fallback - FRONTEND PRESERVED
-      // Get current user email
       const userData = await AsyncStorage.getItem('user');
       if (userData) {
         const user = JSON.parse(userData);
-        if (user.email) {
-          const { getUserFavorites } = await import('../utils/userStorage');
-          return await getUserFavorites(user.email);
-        }
+        userEmail = user.email;
+      } else {
+        // If logged out, use last user email to access favorites
+        const lastUserEmail = await AsyncStorage.getItem('lastUserEmail');
+        userEmail = lastUserEmail;
       }
-      // Fallback to old key for backward compatibility
-      const favoritesJson = await AsyncStorage.getItem('favorites');
-      return favoritesJson ? JSON.parse(favoritesJson) : [];
+    } catch (error) {
+      console.log('Could not get user email, will use fallback storage');
     }
+    
+    // Get favorites from local storage (primary source)
+    let localFavorites = [];
+    try {
+      if (userEmail) {
+        const { getUserFavorites } = await import('../utils/userStorage');
+        localFavorites = await getUserFavorites(userEmail);
+      } else {
+        // Fallback to old key for backward compatibility
+        const favoritesJson = await AsyncStorage.getItem('favorites');
+        localFavorites = favoritesJson ? JSON.parse(favoritesJson) : [];
+      }
+    } catch (error) {
+      console.error('Error loading favorites from local storage:', error);
+      localFavorites = [];
+    }
+    
+    // Normalize local favorites to strings
+    const normalizedLocalFavorites = localFavorites.map(id => String(id));
+    console.log('✅ Loaded favorites from local storage:', normalizedLocalFavorites.length, 'IDs:', normalizedLocalFavorites, 'User:', userEmail || 'anonymous');
+    
+    // Try to sync with API (non-blocking - don't fail if API fails)
+    try {
+      const result = await favoriteService.getFavorites();
+      if (result !== null && result !== undefined) {
+        const apiFavorites = Array.isArray(result) ? result : (result.data || []);
+        const normalizedApiFavorites = apiFavorites.map(id => String(id));
+        console.log('✅ Synced favorites from API:', normalizedApiFavorites.length);
+        // Return API favorites if available, otherwise return local
+        return normalizedApiFavorites.length > 0 ? normalizedApiFavorites : normalizedLocalFavorites;
+      }
+    } catch (error) {
+      // API failed - that's okay, use local storage
+      console.log('⚠️ API sync failed, using local storage:', error.message);
+    }
+    
+    // Return local favorites (always available, works offline)
+    return normalizedLocalFavorites;
   },
 };
 

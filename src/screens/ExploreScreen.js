@@ -297,10 +297,15 @@ export default function ExploreScreen() {
       // Load favorites and merge with apartments
       try {
         const favoriteIds = await hybridFavoriteService.getFavorites();
-        finalApartments = finalApartments.map((apt) => ({
-          ...apt,
-          isFavorite: favoriteIds.includes(apt.id) || favoriteIds.includes(String(apt.id)),
-        }));
+        // favoriteIds are already normalized to strings in hybridFavoriteService.getFavorites
+        finalApartments = finalApartments.map((apt) => {
+          const aptId = String(apt.id || apt._id || '');
+          return {
+            ...apt,
+            isFavorite: favoriteIds.includes(aptId),
+          };
+        });
+        console.log('✅ ExploreScreen - Merged favorites with apartments. Favorites count:', favoriteIds.length);
       } catch (favoritesError) {
         console.error('Error loading favorites:', favoritesError);
         // Continue without favorites
@@ -355,10 +360,14 @@ export default function ExploreScreen() {
         formattedUserListings.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         
         const favoriteIds = await hybridFavoriteService.getFavorites();
-        const combined = [...formattedUserListings, ...apartments].map((apt) => ({
-          ...apt,
-          isFavorite: favoriteIds.includes(apt.id) || favoriteIds.includes(String(apt.id)),
-        }));
+        // favoriteIds are already normalized to strings in hybridFavoriteService.getFavorites
+        const combined = [...formattedUserListings, ...apartments].map((apt) => {
+          const aptId = String(apt.id || apt._id || '');
+          return {
+            ...apt,
+            isFavorite: favoriteIds.includes(aptId),
+          };
+        });
         setApartmentList(combined);
       } catch (fallbackError) {
         console.error('Fallback error:', fallbackError);
@@ -372,10 +381,14 @@ export default function ExploreScreen() {
   const loadFavorites = async () => {
     try {
       const favoriteIds = await hybridFavoriteService.getFavorites();
-      setApartmentList(prevList => prevList.map((apt) => ({
-        ...apt,
-        isFavorite: favoriteIds.includes(apt.id) || favoriteIds.includes(String(apt.id)),
-      })));
+      // favoriteIds are already normalized to strings in hybridFavoriteService.getFavorites
+      setApartmentList(prevList => prevList.map((apt) => {
+        const aptId = String(apt.id || apt._id || '');
+        return {
+          ...apt,
+          isFavorite: favoriteIds.includes(aptId),
+        };
+      }));
     } catch (error) {
       console.error('Error loading favorites:', error);
     }
@@ -402,14 +415,48 @@ export default function ExploreScreen() {
 
     // Save to API and local storage
     if (!wasFavorite) {
-      await hybridFavoriteService.addFavorite(id);
-      if (apartment) {
-        await notifyFavoriteAdded(apartment.title);
+      // Normalize ID to string for consistent saving
+      const normalizedId = String(id);
+      try {
+        await hybridFavoriteService.addFavorite(normalizedId);
+        console.log('✅ ExploreScreen - Favorite added:', normalizedId, apartment?.title || 'Unknown');
+        if (apartment) {
+          await notifyFavoriteAdded(apartment.title);
+        }
+        // Force a small delay to ensure AsyncStorage is flushed
+        await new Promise(resolve => setTimeout(resolve, 100));
+        console.log('✅ ExploreScreen - Favorite save confirmed');
+      } catch (error) {
+        console.error('❌ ExploreScreen - Error adding favorite:', error);
+        // Revert UI state on error
+        setApartmentList(prevList => prevList.map((apt) => {
+          if (apt.id === id) {
+            return { ...apt, isFavorite: false };
+          }
+          return apt;
+        }));
       }
     } else {
-      await hybridFavoriteService.removeFavorite(id);
-      if (apartment) {
-        await notifyFavoriteRemoved(apartment.title);
+      // Normalize ID to string for consistent removal
+      const normalizedId = String(id);
+      try {
+        await hybridFavoriteService.removeFavorite(normalizedId);
+        console.log('✅ ExploreScreen - Favorite removed:', normalizedId, apartment?.title || 'Unknown');
+        if (apartment) {
+          await notifyFavoriteRemoved(apartment.title);
+        }
+        // Force a small delay to ensure AsyncStorage is flushed
+        await new Promise(resolve => setTimeout(resolve, 100));
+        console.log('✅ ExploreScreen - Favorite removal confirmed');
+      } catch (error) {
+        console.error('❌ ExploreScreen - Error removing favorite:', error);
+        // Revert UI state on error
+        setApartmentList(prevList => prevList.map((apt) => {
+          if (apt.id === id) {
+            return { ...apt, isFavorite: true };
+          }
+          return apt;
+        }));
       }
     }
   };
@@ -556,26 +603,52 @@ export default function ExploreScreen() {
 
   const filters = ['Entire place', '2 Bedroom', '3 Bedroom', '4 Bedroom', 'Pool', 'Pet-friendly', 'Top-rated'];
 
-  const renderApartmentCard = ({ item }) => (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => navigation.navigate('ApartmentDetails', { apartment: item })}
-      activeOpacity={0.8}
-    >
-      <View style={styles.imageContainer}>
-        <Image source={{ uri: item.image }} style={styles.image} />
-        <TouchableOpacity
-          style={styles.favoriteButton}
-          onPress={() => toggleFavorite(item.id)}
-          activeOpacity={0.7}
-        >
-          <MaterialIcons 
-            name={item.isFavorite ? 'favorite' : 'favorite-border'} 
-            size={20} 
-            color={item.isFavorite ? '#FF0000' : '#FFFFFF'} 
+  // Separate component for apartment card to use hooks properly
+  const ApartmentCard = ({ item, onPress, onToggleFavorite }) => {
+    const [imageError, setImageError] = useState(false);
+    const [imageLoading, setImageLoading] = useState(true);
+    
+    // Default fallback image
+    const defaultImage = 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=800';
+    const imageUri = item.image && !imageError && item.image.trim() !== '' ? item.image : defaultImage;
+    
+    return (
+      <TouchableOpacity
+        style={styles.card}
+        onPress={() => onPress(item)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.imageContainer}>
+          {imageLoading && (
+            <View style={styles.imagePlaceholder}>
+              <ActivityIndicator size="small" color="#FFD700" />
+            </View>
+          )}
+          <Image 
+            source={{ uri: imageUri }} 
+            style={[styles.image, imageLoading && styles.imageHidden]}
+            onError={() => {
+              console.log('Image failed to load:', imageUri);
+              setImageError(true);
+              setImageLoading(false);
+            }}
+            onLoad={() => {
+              setImageLoading(false);
+            }}
+            defaultSource={{ uri: defaultImage }}
           />
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity
+            style={styles.favoriteButton}
+            onPress={() => onToggleFavorite(item.id)}
+            activeOpacity={0.7}
+          >
+            <MaterialIcons 
+              name={item.isFavorite ? 'favorite' : 'favorite-border'} 
+              size={20} 
+              color={item.isFavorite ? '#FF0000' : '#FFFFFF'} 
+            />
+          </TouchableOpacity>
+        </View>
       <View style={styles.cardContent}>
         <View style={styles.cardHeader}>
           <View style={styles.cardInfo}>
@@ -594,6 +667,15 @@ export default function ExploreScreen() {
         </View>
       </View>
     </TouchableOpacity>
+    );
+  };
+
+  const renderApartmentCard = ({ item }) => (
+    <ApartmentCard 
+      item={item}
+      onPress={(apartment) => navigation.navigate('ApartmentDetails', { apartment })}
+      onToggleFavorite={toggleFavorite}
+    />
   );
 
   return (
@@ -883,6 +965,20 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
     paddingHorizontal: 20,
+  },
+  imagePlaceholder: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  imageHidden: {
+    opacity: 0,
   },
 });
 

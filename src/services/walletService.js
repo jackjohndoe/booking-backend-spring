@@ -1,36 +1,57 @@
 // Wallet Service
 import api from './api';
+import { API_ENDPOINTS } from '../config/api';
 
 export const walletService = {
   // Get wallet balance
   getBalance: async () => {
     try {
-      const response = await api.get('/api/wallet/balance');
+      const response = await api.get(API_ENDPOINTS.WALLET.BALANCE);
       // If response is null (403, 401, etc.), return null for hybrid service to handle
       if (response === null || response === undefined) {
+        console.warn('⚠️ Wallet balance API returned null - may indicate authentication or backend issues');
         return null;
       }
       return response.data || response;
     } catch (error) {
-      // Return null instead of throwing to allow graceful fallback
+      // Log error but don't throw - allow graceful fallback
+      if (error.status !== 401 && error.status !== 403) {
+        console.warn('⚠️ Wallet balance API error (non-fatal):', error.message || 'Unknown error');
+      }
       return null;
     }
   },
 
   // Fund wallet
-  fundWallet: async (amount, paymentMethod = 'bank_transfer') => {
+  fundWallet: async (amount, paymentMethod = 'bank_transfer', reference = null) => {
     try {
-      const response = await api.post('/api/wallet/fund', {
+      console.log(`💰 Calling wallet fund API: Amount: ₦${amount}, Method: ${paymentMethod}, Reference: ${reference || 'N/A'}`);
+      
+      const response = await api.post(API_ENDPOINTS.WALLET.FUND, {
         amount,
-        paymentMethod,
+        description: paymentMethod,
+        reference: reference || null,
       });
-      // If response is null (403, 401, etc.), return null for hybrid service to handle
+      
+      // If response is null (403, 401, etc.), log and return null for hybrid service to handle
       if (response === null || response === undefined) {
+        console.warn('⚠️ Wallet fund API returned null - this may indicate authentication or backend issues');
         return null;
       }
+      
+      console.log('✅ Wallet fund API response:', response);
       return response.data || response;
     } catch (error) {
+      // Log error details for debugging
+      console.error('❌ Wallet fund API error:', {
+        message: error.message,
+        status: error.status,
+        isNetworkError: error.isNetworkError,
+        endpoint: API_ENDPOINTS.WALLET.FUND
+      });
+      
       // Return null instead of throwing to allow graceful fallback
+      // The hybrid service will handle local funding as fallback
       return null;
     }
   },
@@ -38,7 +59,7 @@ export const walletService = {
   // Get transactions
   getTransactions: async () => {
     try {
-      const response = await api.get('/api/wallet/transactions');
+      const response = await api.get(API_ENDPOINTS.WALLET.TRANSACTIONS);
       // If response is null (403, 401, etc.), return null for hybrid service to handle
       if (response === null || response === undefined) {
         return null;
@@ -53,7 +74,7 @@ export const walletService = {
   // Make payment from wallet
   makePayment: async (amount, description, bookingId = null) => {
     try {
-      const response = await api.post('/api/wallet/pay', {
+      const response = await api.post(API_ENDPOINTS.WALLET.PAY, {
         amount,
         description,
         bookingId,
@@ -65,6 +86,137 @@ export const walletService = {
       return response.data || response;
     } catch (error) {
       // Return null instead of throwing to allow graceful fallback
+      return null;
+    }
+  },
+
+  // Withdraw funds from wallet
+  withdrawFunds: async (amount, method = 'Bank Transfer', accountDetails = '', accountBank = null, accountNumber = null, beneficiaryName = null) => {
+    try {
+      const response = await api.post(API_ENDPOINTS.WALLET.WITHDRAW, {
+        amount,
+        method,
+        accountDetails,
+        accountBank,
+        accountNumber,
+        beneficiaryName,
+        description: `Withdrawal via ${method}`,
+      });
+      if (response === null || response === undefined) {
+        return null;
+      }
+      return response.data || response;
+    } catch (error) {
+      return null;
+    }
+  },
+
+  // Sync wallet balance with Flutterwave
+  syncBalance: async () => {
+    try {
+      const response = await api.post(API_ENDPOINTS.WALLET.SYNC);
+      if (response === null || response === undefined) {
+        return null;
+      }
+      return response.data || response;
+    } catch (error) {
+      // Don't throw error - sync failures shouldn't block wallet operations
+      // Log error but return null so calling code can continue
+      if (error.status === 500) {
+        console.warn('⚠️ Wallet sync endpoint returned 500 - backend may be processing. Continuing without sync.');
+      } else {
+        console.warn('⚠️ Wallet sync failed (non-fatal):', error.message || 'Unknown error');
+      }
+      return null;
+    }
+  },
+
+  // Verify and process a specific transaction
+  verifyTransaction: async (txRef) => {
+    try {
+      const response = await api.post(API_ENDPOINTS.WALLET.VERIFY_TRANSACTION, { txRef });
+      if (response === null || response === undefined) {
+        return null;
+      }
+      return response.data || response;
+    } catch (error) {
+      console.error('Error verifying transaction:', error);
+      throw error;
+    }
+  },
+
+  // Sync all transactions from Flutterwave
+  syncAllTransactions: async () => {
+    const maxRetries = 3;
+    let lastError = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`🔄 Syncing all transactions (attempt ${attempt}/${maxRetries})...`);
+        const response = await api.post(API_ENDPOINTS.WALLET.SYNC_ALL);
+        if (response === null || response === undefined) {
+          if (attempt < maxRetries) {
+            console.warn(`⚠️ Sync returned null, retrying... (${attempt}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            continue;
+          }
+          return null;
+        }
+        console.log('✅ Sync all transactions completed successfully');
+        return response.data || response;
+      } catch (error) {
+        lastError = error;
+        console.error(`❌ Error syncing all transactions (attempt ${attempt}/${maxRetries}):`, error.message);
+        
+        // Retry on network errors or 500 errors
+        if (attempt < maxRetries && (error.isNetworkError || error.status === 500)) {
+          const delay = 1000 * attempt; // 1s, 2s, 3s
+          console.log(`⏳ Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        // Don't retry on auth errors
+        if (error.status === 401 || error.status === 403) {
+          throw error;
+        }
+      }
+    }
+    
+    // If all retries failed, throw the last error
+    console.error('❌ All sync attempts failed');
+    throw lastError || new Error('Failed to sync all transactions after retries');
+  },
+
+  // Verify and process multiple transactions
+  verifyMultipleTransactions: async (txRefs) => {
+    try {
+      const response = await api.post(API_ENDPOINTS.WALLET.VERIFY_TRANSACTIONS, { txRefs });
+      if (response === null || response === undefined) {
+        return null;
+      }
+      return response.data || response;
+    } catch (error) {
+      console.error('Error verifying multiple transactions:', error);
+      throw error;
+    }
+  },
+
+  // Verify all pending transactions for the current user
+  verifyPendingTransactions: async () => {
+    try {
+      console.log('🔄 Verifying all pending transactions...');
+      // Call sync-all which verifies pending transactions
+      const response = await api.post(API_ENDPOINTS.WALLET.SYNC_ALL);
+      if (response === null || response === undefined) {
+        console.warn('⚠️ Verify pending transactions returned null');
+        return null;
+      }
+      console.log('✅ Pending transactions verification completed');
+      return response.data || response;
+    } catch (error) {
+      console.error('Error verifying pending transactions:', error);
+      // Don't throw - this is a background operation
       return null;
     }
   },

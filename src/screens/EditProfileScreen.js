@@ -85,8 +85,61 @@ export default function EditProfileScreen() {
     }
   };
 
+  // Handle image selection on web platform
+  const handleWebImageSelect = () => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    
+    // Create a file input element
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.display = 'none';
+    
+    input.onchange = (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
+      
+      // Convert file to data URL
+      const file = files[0];
+      const reader = new FileReader();
+      
+      reader.onload = (event) => {
+        const dataUrl = event.target?.result;
+        if (dataUrl) {
+          console.log('Image selected from web:', dataUrl.substring(0, 50) + '...');
+          setProfilePicture(dataUrl);
+          Alert.alert('Image Selected', 'Profile picture updated! Tap Save to apply changes.');
+        }
+      };
+      
+      reader.onerror = () => {
+        console.error('Error reading file:', file.name);
+        Alert.alert('Error', 'Failed to read image file. Please try again.');
+      };
+      
+      reader.readAsDataURL(file);
+    };
+    
+    // Trigger file selection
+    document.body.appendChild(input);
+    input.click();
+    
+    // Clean up after a short delay
+    setTimeout(() => {
+      if (document.body.contains(input)) {
+        document.body.removeChild(input);
+      }
+    }, 100);
+  };
+
   const handleSelectImage = async () => {
     try {
+      // On web, use file input instead of expo-image-picker
+      if (Platform.OS === 'web') {
+        handleWebImageSelect();
+        return;
+      }
+
       // Request media library permission first
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
@@ -146,8 +199,33 @@ export default function EditProfileScreen() {
       // Check if user selected an image (not canceled)
       if (!result.canceled && result.assets && result.assets.length > 0) {
         // Update profile picture in real time - this will show immediately
-        const imageUri = result.assets[0].uri;
+        let imageUri = result.assets[0].uri;
         console.log('Image selected from device:', imageUri);
+        
+        // On web, if we get a blob URL, convert it to a data URL for persistence
+        if (Platform.OS === 'web' && imageUri.startsWith('blob:')) {
+          try {
+            const response = await fetch(imageUri);
+            const blob = await response.blob();
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const dataUrl = reader.result;
+              console.log('Converted blob to data URL:', dataUrl.substring(0, 50) + '...');
+              setProfilePicture(dataUrl);
+              Alert.alert('Image Selected', 'Profile picture updated! Tap Save to apply changes.');
+            };
+            reader.onerror = () => {
+              console.error('Error converting blob to data URL');
+              Alert.alert('Error', 'Failed to process image. Please try again.');
+            };
+            reader.readAsDataURL(blob);
+            return; // Exit early, will set profile picture in reader.onloadend
+          } catch (error) {
+            console.error('Error converting blob URL:', error);
+            // Fall through to use the blob URL anyway (will work temporarily)
+          }
+        }
+        
         setProfilePicture(imageUri);
         
         // Show confirmation
@@ -190,25 +268,33 @@ export default function EditProfileScreen() {
       // Save to user-specific storage
       const { saveUserProfile } = await import('../utils/userStorage');
       await saveUserProfile(user.email, profileData);
-      console.log('EditProfileScreen - Profile saved locally:', { 
+      console.log('EditProfileScreen - Profile saved to userStorage:', { 
         ...profileData, 
         profilePicture: profilePicture ? 'Image set' : 'No image',
         pictureUri: profilePicture ? (profilePicture.length > 50 ? profilePicture.substring(0, 50) + '...' : profilePicture) : null
       });
       
-      // Ensure save is complete
-      await AsyncStorage.getItem('user'); // Force AsyncStorage to flush
+      // Verify the save by reading it back (same as phone number)
+      const { getUserProfile } = await import('../utils/userStorage');
+      const verifyProfile = await getUserProfile(user.email);
+      console.log('EditProfileScreen - Verified saved profile:', {
+        hasPicture: !!verifyProfile?.profilePicture,
+        hasPhone: !!verifyProfile?.whatsappNumber,
+        pictureMatches: verifyProfile?.profilePicture === profilePicture
+      });
       
-      // Update auth context - local only, no API calls
+      // Update auth context with name and email (same as phone number - no special handling for picture)
+      // Profile picture is stored in userStorage and loaded by ProfileScreen, just like phone number
       try {
-        await signIn({
+        const updatedUser = {
           ...user,
           name: name.trim(),
           email: email.trim(),
-        });
+        };
+        await signIn(updatedUser);
       } catch (signInError) {
         console.error('Error updating auth context:', signInError);
-        // Continue even if signIn fails - profile is already saved
+        // Continue even if signIn fails - profile is already saved to userStorage
       }
 
       // Add notification - local only, no API calls
@@ -219,7 +305,8 @@ export default function EditProfileScreen() {
         // Continue even if notification fails - profile is already saved
       }
 
-      // Navigate back - ProfileScreen will reload via useFocusEffect
+      // Navigate back - ProfileScreen will reload from userStorage via useFocusEffect
+      // This is the same flow as phone number - simple and reliable
       navigation.goBack();
       
       // Show success message after navigation

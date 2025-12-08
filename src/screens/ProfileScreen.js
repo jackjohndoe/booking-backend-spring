@@ -7,18 +7,19 @@ import {
   TouchableOpacity,
   Alert,
   Image,
+  Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../hooks/useAuth';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useNavigation, useFocusEffect, useRoute } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialIcons } from '@expo/vector-icons';
 
 export default function ProfileScreen() {
   const { user, signOut } = useAuth();
   const navigation = useNavigation();
+  const route = useRoute();
   const [profileData, setProfileData] = useState(null);
-  const [imageKey, setImageKey] = useState(0); // Key to force image reload
   const [hasListings, setHasListings] = useState(false);
 
   const loadProfileData = React.useCallback(async () => {
@@ -28,6 +29,8 @@ export default function ProfileScreen() {
         setProfileData(null);
         return;
       }
+
+      console.log('ProfileScreen - Loading profile data for:', user.email);
 
       // Use user-specific storage
       const { getUserProfile } = await import('../utils/userStorage');
@@ -42,31 +45,28 @@ export default function ProfileScreen() {
           whatsappNumber: loadedProfileData.whatsappNumber || null,
           address: loadedProfileData.address || null,
         };
-        // Check if profile picture changed before updating
-        setProfileData(prev => {
-          const pictureChanged = prev?.profilePicture !== newProfileData.profilePicture;
-          // Update image key to force image component to reload when picture changes (including when removed)
-          if (pictureChanged) {
-            setImageKey(prevKey => prevKey + 1);
-          }
-          return newProfileData;
-        });
         
-        console.log('ProfileScreen - Loaded profile data:', {
+        console.log('ProfileScreen - Loaded profile data from userStorage:', {
           name: newProfileData.name,
           hasPicture: !!newProfileData.profilePicture,
-          pictureUri: newProfileData.profilePicture ? (newProfileData.profilePicture.length > 50 ? newProfileData.profilePicture.substring(0, 50) + '...' : newProfileData.profilePicture) : null
+          hasPhone: !!newProfileData.whatsappNumber,
         });
+        
+        // Update profile data (same simple flow as phone number)
+        setProfileData(newProfileData);
       } else {
         // If no saved profile, use user data from auth
-        setProfileData({
+        const fallbackData = {
           name: user?.name || 'User',
           email: user?.email || '',
-          profilePicture: null,
+          profilePicture: user?.profilePicture || null, // Also check auth context
           whatsappNumber: null,
           address: null,
+        };
+        setProfileData(fallbackData);
+        console.log('ProfileScreen - No saved profile, using auth data:', {
+          hasPicture: !!fallbackData.profilePicture
         });
-        console.log('ProfileScreen - No saved profile, using auth data');
       }
     } catch (error) {
       console.error('Error loading profile data:', error);
@@ -74,15 +74,16 @@ export default function ProfileScreen() {
       setProfileData({
         name: user?.name,
         email: user?.email,
-        profilePicture: null,
+        profilePicture: user?.profilePicture || null, // Also check auth context
       });
     }
   }, [user]);
 
-  // Load profile on mount
+  // Load profile on mount and when user changes (same as phone number)
   useEffect(() => {
     loadProfileData();
   }, [user]);
+
 
   // Check if user has listings
   const checkUserListings = React.useCallback(async () => {
@@ -115,60 +116,79 @@ export default function ProfileScreen() {
     }
   }, [user]);
 
-  // Reload profile when screen comes into focus (real-time updates)
+  // Reload profile when screen comes into focus (same simple flow as phone number)
   useFocusEffect(
     React.useCallback(() => {
-      // Reload immediately when screen comes into focus
+      // Reload when screen comes into focus - this ensures profile picture appears after saving
+      // This is the same mechanism that makes phone number appear immediately
       loadProfileData();
       checkUserListings();
-      
-      // Also reload after delays to catch any async saves and ensure image updates
-      const timer1 = setTimeout(() => {
-        loadProfileData();
-        checkUserListings();
-      }, 150);
-      const timer2 = setTimeout(() => {
-        loadProfileData();
-        checkUserListings();
-      }, 400);
-      const timer3 = setTimeout(() => {
-        loadProfileData();
-        checkUserListings();
-      }, 700);
-      return () => {
-        clearTimeout(timer1);
-        clearTimeout(timer2);
-        clearTimeout(timer3);
-      };
     }, [user, loadProfileData, checkUserListings])
   );
 
   const handleSignOut = () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out?',
-      [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Sign Out',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await signOut();
-              navigation.reset({
-                index: 0,
-                routes: [{ name: 'SignIn' }],
-              });
-            } catch (error) {
-              Alert.alert('Error', 'Failed to sign out. Please try again.');
-            }
+    // On web, use window.confirm instead of Alert.alert for better compatibility
+    if (Platform.OS === 'web') {
+      const confirmed = window.confirm('Are you sure you want to sign out?');
+      if (!confirmed) {
+        return;
+      }
+      
+      // Sign out immediately on web
+      (async () => {
+        try {
+          console.log('🔄 Starting sign out process...');
+          await signOut();
+          console.log('✅ Sign out completed - reloading page...');
+          
+          // Clear AsyncStorage explicitly before reload
+          try {
+            await AsyncStorage.removeItem('user');
+          } catch (e) {
+            console.error('Error clearing storage:', e);
+          }
+          
+          // Force reload after a brief delay to ensure state is cleared
+          setTimeout(() => {
+            window.location.reload();
+          }, 100);
+        } catch (error) {
+          console.error('❌ Error signing out:', error);
+          // Force reload even on error
+          window.location.reload();
+        }
+      })();
+    } else {
+      // Native platforms use Alert.alert
+      Alert.alert(
+        'Sign Out',
+        'Are you sure you want to sign out?',
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
           },
-        },
-      ]
-    );
+          {
+            text: 'Sign Out',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                console.log('🔄 Starting sign out process...');
+                await signOut();
+                console.log('✅ Sign out completed - navigation will be handled by App.js');
+              } catch (error) {
+                console.error('❌ Error signing out:', error);
+                Alert.alert(
+                  'Sign Out',
+                  'There was an error signing out, but you have been logged out locally.',
+                  [{ text: 'OK' }]
+                );
+              }
+            },
+          },
+        ]
+      );
+    }
   };
 
   return (
@@ -178,17 +198,10 @@ export default function ProfileScreen() {
         <View style={styles.header}>
           {profileData?.profilePicture ? (
             <Image 
-              source={{ 
-                uri: profileData.profilePicture.startsWith('file://') 
-                  ? profileData.profilePicture 
-                  : `${profileData.profilePicture}?t=${imageKey}`, // Add timestamp for non-file URIs
-                cache: 'reload' // Force reload of image
-              }} 
+              source={{ uri: profileData.profilePicture }} 
               style={styles.avatarImage}
-              key={`profile-img-${imageKey}-${profileData.profilePicture}`} // Force re-render when key or URI changes
               onError={(error) => {
                 console.error('ProfileScreen - Error loading profile image:', error);
-                console.log('Failed image URI:', profileData.profilePicture);
                 // Clear invalid image URL
                 setProfileData(prev => ({ ...prev, profilePicture: null }));
               }}
@@ -258,6 +271,18 @@ export default function ProfileScreen() {
 
           <TouchableOpacity 
             style={styles.menuItem}
+            onPress={() => navigation.navigate('MyBookings')}
+          >
+            <MaterialIcons name="book-online" size={24} color="#333" />
+            <View style={styles.menuContent}>
+              <Text style={styles.menuTitle}>My Bookings</Text>
+              <Text style={styles.menuSubtitle}>Manage your current bookings</Text>
+            </View>
+            <Text style={styles.menuArrow}>›</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.menuItem}
             onPress={() => navigation.navigate('MyListings')}
           >
             <MaterialIcons name="add-business" size={24} color="#333" />
@@ -268,19 +293,17 @@ export default function ProfileScreen() {
             <Text style={styles.menuArrow}>›</Text>
           </TouchableOpacity>
 
-          {hasListings && (
-            <TouchableOpacity 
-              style={styles.menuItem}
-              onPress={() => navigation.navigate('HostBookedListings')}
-            >
-              <MaterialIcons name="event-available" size={24} color="#FFD700" />
-              <View style={styles.menuContent}>
-                <Text style={styles.menuTitle}>Booked Listings</Text>
-                <Text style={styles.menuSubtitle}>View bookings for your apartments</Text>
-              </View>
-              <Text style={styles.menuArrow}>›</Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity 
+            style={styles.menuItem}
+            onPress={() => navigation.navigate('HostBookedListings')}
+          >
+            <MaterialIcons name="event-available" size={24} color="#FFD700" />
+            <View style={styles.menuContent}>
+              <Text style={styles.menuTitle}>Booked Listings</Text>
+              <Text style={styles.menuSubtitle}>View bookings for your apartments</Text>
+            </View>
+            <Text style={styles.menuArrow}>›</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.section}>

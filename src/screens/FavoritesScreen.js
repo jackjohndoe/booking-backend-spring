@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -95,63 +95,110 @@ const allApartments = [
 export default function FavoritesScreen() {
   const navigation = useNavigation();
   const [favorites, setFavorites] = useState([]);
+  const intervalRef = useRef(null);
 
-  useEffect(() => {
-    loadFavorites();
-  }, []);
-
-  // Reload favorites when screen comes into focus
-  useFocusEffect(
-    React.useCallback(() => {
-      loadFavorites();
-    }, [])
-  );
-
-  const loadFavorites = async () => {
+  const loadFavorites = useCallback(async () => {
     try {
+      console.log('🔄 Loading favorites...');
+      
       // Get user-specific favorites (persists across logout/login)
       const favoriteIds = await hybridFavoriteService.getFavorites();
-      console.log('FavoritesScreen - Loaded favorite IDs:', favoriteIds.length);
+      console.log('📋 Favorite IDs loaded:', favoriteIds);
       
       if (!favoriteIds || favoriteIds.length === 0) {
+        console.log('ℹ️ No favorites found');
         setFavorites([]);
         return;
       }
       
       // Get all apartments (from global listings + defaults)
+      console.log('🏠 Loading all apartments...');
       const allApartments = await hybridApartmentService.getAllApartmentsForExplore();
-      console.log('FavoritesScreen - All apartments loaded:', allApartments.length);
+      console.log('🏠 All apartments loaded:', allApartments.length);
+      
+      // Normalize all favorite IDs to strings for consistent comparison
+      const normalizedFavoriteIds = favoriteIds.map(id => String(id));
+      console.log('📋 Normalized favorite IDs:', normalizedFavoriteIds);
       
       // Filter to only show favorite apartments
-      const favoriteApartments = allApartments.filter((apt) =>
-        favoriteIds.includes(apt.id) || favoriteIds.includes(String(apt.id))
-      );
+      const favoriteApartments = allApartments.filter((apt) => {
+        const aptId = String(apt.id || apt._id || '');
+        const isFavorite = normalizedFavoriteIds.includes(aptId);
+        if (isFavorite) {
+          console.log('✅ Found favorite apartment:', aptId, apt.title);
+        }
+        return isFavorite;
+      });
       
-      console.log('FavoritesScreen - Favorite apartments found:', favoriteApartments.length);
+      console.log('❤️ Favorite apartments found:', favoriteApartments.length);
       setFavorites(favoriteApartments);
     } catch (error) {
-      console.error('Error loading favorites:', error);
+      console.error('❌ Error loading favorites:', error);
+      console.error('❌ Error stack:', error.stack);
       setFavorites([]);
     }
-  };
+  }, []);
+
+  // Reload favorites when screen comes into focus (real-time updates)
+  useFocusEffect(
+    useCallback(() => {
+      // Reload immediately when screen comes into focus
+      loadFavorites();
+      
+      // Also reload after small delays to catch any async saves from navigation
+      const timer1 = setTimeout(() => {
+        loadFavorites();
+      }, 100);
+      const timer2 = setTimeout(() => {
+        loadFavorites();
+      }, 300);
+      const timer3 = setTimeout(() => {
+        loadFavorites();
+      }, 600);
+      
+      // Set up interval to check for favorites updates every 300ms while screen is focused
+      // This provides fast real-time updates when favorites are added from other screens
+      intervalRef.current = setInterval(() => {
+        loadFavorites();
+      }, 300);
+      
+      return () => {
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+        clearTimeout(timer3);
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+      };
+    }, [loadFavorites])
+  );
+
 
   const removeFavorite = async (id) => {
     try {
-      const apartment = favorites.find((apt) => apt.id === id);
+      const apartment = favorites.find((apt) => apt.id === id || apt._id === id);
+      
+      // Optimistically update UI immediately (real-time removal)
+      const updatedFavorites = favorites.filter((apt) => (apt.id !== id && apt._id !== id));
+      setFavorites(updatedFavorites);
       
       // Remove from user-specific favorites (persists across logout/login)
-      await hybridFavoriteService.removeFavorite(id);
-      
-      // Update local state
-      const updatedFavorites = favorites.filter((apt) => apt.id !== id);
-      setFavorites(updatedFavorites);
+      // This happens in the background after UI update for instant feedback
+      hybridFavoriteService.removeFavorite(id).catch((error) => {
+        console.error('Error removing favorite from storage:', error);
+        // If removal fails, reload favorites to restore state
+        loadFavorites();
+      });
       
       // Add notification
       if (apartment) {
-        await notifyFavoriteRemoved(apartment.title);
+        await notifyFavoriteRemoved(apartment.title || apartment.name);
       }
     } catch (error) {
       console.error('Error removing favorite:', error);
+      // Reload favorites on error to ensure consistency
+      loadFavorites();
     }
   };
 

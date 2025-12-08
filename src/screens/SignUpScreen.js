@@ -11,10 +11,12 @@ import {
   Platform,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { MaterialIcons } from '@expo/vector-icons';
 import { useAuth } from '../hooks/useAuth';
 import * as Google from 'expo-auth-session/providers/google';
 import { useNavigation } from '@react-navigation/native';
 import { authService } from '../services/authService';
+import { markWelcomeDealSeen } from '../utils/userStorage';
 // Welcome deal modal is now shown on the home page (ExploreScreen) instead
 
 let AppleAuthentication;
@@ -32,6 +34,7 @@ export default function SignUpScreen() {
   const [errorMessage, setErrorMessage] = useState('');
   const [showWelcomeDeal, setShowWelcomeDeal] = useState(false);
   const [newUserEmail, setNewUserEmail] = useState(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const [request, response, promptAsync] = Google.useAuthRequest({
     iosClientId: 'YOUR_IOS_CLIENT_ID',
@@ -195,64 +198,77 @@ export default function SignUpScreen() {
     
     setLoading(true);
     try {
-      // Call backend API for registration
+      // Step 1: Register user with backend - this saves user information to database
       const response = await authService.register({
         name: name.trim(),
         email: email.trim().toLowerCase(),
         password: password,
       });
       
-      // Check if registration was successful
-      // Response should have user data or at least indicate success
-      if (response) {
-        // If response has user object, use it
-        // Otherwise, create user object from registration data
-        const userToSignIn = response.user || {
-          id: response.id || response._id || response.data?.id || response.data?._id || email.trim().toLowerCase(),
-          name: response.name || response.data?.name || response.user?.name || name.trim(),
-          email: response.email || response.data?.email || response.user?.email || email.trim().toLowerCase(),
-          token: response.token || response.accessToken || response.data?.token || response.user?.token || null,
-        };
-        
-        // Ensure user object has required fields
-        if (!userToSignIn.email) {
-          userToSignIn.email = email.trim().toLowerCase();
-        }
-        if (!userToSignIn.name) {
-          userToSignIn.name = name.trim();
-        }
-        if (!userToSignIn.id) {
-          userToSignIn.id = userToSignIn.email;
-        }
-        
-        // Sign in the user locally
-        // Pass isNewUser=true to indicate this is a sign-up, not a sign-in
-        // This ensures new users can see the welcome deal
-        await signIn(userToSignIn, true);
-        
-        // IMMEDIATELY initialize wallet to ₦0 for new user
-        // This ensures every new user starts with zero balance
-        try {
-          const { updateWalletBalance } = await import('../utils/wallet');
-          await updateWalletBalance(userToSignIn.email, 0);
-          console.log(`✅ Wallet initialized to ₦0 for new user: ${userToSignIn.email}`);
-        } catch (walletInitError) {
-          console.error('Error initializing wallet to zero:', walletInitError);
-          // Continue even if wallet initialization fails - getWalletBalance will return 0 anyway
-        }
-        
-        // Clear form
-        setName('');
-        setEmail('');
-        setPassword('');
-        
-        // Navigate to home page - welcome deal modal will appear there
-        // The modal will show on the home page (ExploreScreen) for new users
-        navigation.replace('Main');
-      } else {
-        // API returned null or invalid response
-        setErrorMessage('Failed to create account. Please try again.');
+      // Step 2: Validate registration response
+      // User information should now be saved on the backend
+      if (!response) {
+        setErrorMessage('Registration failed. Please try again.');
+        setLoading(false);
+        return;
       }
+
+      // Step 3: Check if user data was returned and saved
+      if (!response.user) {
+        setErrorMessage('Registration failed. User data not received.');
+        setLoading(false);
+        return;
+      }
+
+      // Step 4: Verify essential user information is present
+      if (!response.user.email || !response.user.id) {
+        setErrorMessage('Registration incomplete. Please try again.');
+        setLoading(false);
+        return;
+      }
+
+      // Step 5: User information is now saved on backend
+      // Use the user object from the response (already saved to backend database)
+      const userToSignIn = response.user;
+      
+      // Ensure all required fields are present
+      if (!userToSignIn.email) {
+        userToSignIn.email = email.trim().toLowerCase();
+      }
+      if (!userToSignIn.name) {
+        userToSignIn.name = name.trim();
+      }
+      if (!userToSignIn.id) {
+        userToSignIn.id = userToSignIn.email;
+      }
+      
+      console.log('✅ User registered and saved to backend:', {
+        id: userToSignIn.id,
+        email: userToSignIn.email,
+        name: userToSignIn.name
+      });
+      
+      // Step 6: Sign in the user locally with saved information
+      // Pass isNewUser=true to indicate this is a sign-up, not a sign-in
+      await signIn(userToSignIn, true);
+      
+      // Step 7: Initialize wallet for new user
+      try {
+        const { updateWalletBalance } = await import('../utils/wallet');
+        await updateWalletBalance(userToSignIn.email, 0);
+        console.log(`✅ Wallet initialized to ₦0 for new user: ${userToSignIn.email}`);
+      } catch (walletInitError) {
+        console.error('Error initializing wallet:', walletInitError);
+        // Continue even if wallet initialization fails
+      }
+      
+      // Step 8: Clear form and navigate
+      setName('');
+      setEmail('');
+      setPassword('');
+      
+      // Navigate to home page - welcome deal modal will appear there for new users
+      navigation.replace('Main');
     } catch (error) {
       // Handle API errors - extract message from error object
       const errorMsg = error.message || error.toString() || '';
@@ -327,10 +343,22 @@ export default function SignUpScreen() {
           setErrorMessage('Account already exists. Please sign in instead.');
         }
       } 
-      // Check for network errors
+      // Check for network errors - account creation requires backend connection
       else if (lowerErrorMsg.includes('network') || lowerErrorMsg.includes('failed to fetch') ||
-               lowerErrorMsg.includes('connection') || lowerErrorMsg.includes('timeout')) {
-        setErrorMessage('Network error. Please check your connection and try again.');
+               lowerErrorMsg.includes('connection') || lowerErrorMsg.includes('timeout') ||
+               error.status === 0 || errorMsg.includes('No internet')) {
+        let networkMsg = 'Network error. Please check your connection and try again. Account creation requires a server connection.';
+        
+        // Add emulator-specific help
+        if (Platform.OS === 'android') {
+          networkMsg += ' If using an emulator, ensure it has network access in Android Studio settings.';
+        }
+        
+        setErrorMessage(networkMsg);
+      }
+      // Timeout errors
+      else if (error.status === 408 || lowerErrorMsg.includes('timeout') || lowerErrorMsg.includes('taking too long')) {
+        setErrorMessage('Request timeout. The server is taking too long to respond. Please check your connection and try again.');
       } 
       // For all other errors, show the backend error message if available
       else {
@@ -443,20 +471,33 @@ export default function SignUpScreen() {
           </View>
 
           <View style={styles.inputContainer}>
-            <TextInput
-              style={[styles.input, errorMessage && styles.inputError]}
-              placeholder="Password"
-              placeholderTextColor="#999"
-              value={password}
-              onChangeText={(text) => {
-                setPassword(text);
-                setErrorMessage(''); // Clear error when user types
-              }}
-              secureTextEntry
-              autoCapitalize="none"
-              autoComplete="password"
-              editable={!loading}
-            />
+            <View style={styles.passwordContainer}>
+              <TextInput
+                style={[styles.input, styles.passwordInput, errorMessage && styles.inputError]}
+                placeholder="Password"
+                placeholderTextColor="#999"
+                value={password}
+                onChangeText={(text) => {
+                  setPassword(text);
+                  setErrorMessage(''); // Clear error when user types
+                }}
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+                autoComplete="password"
+                editable={!loading}
+              />
+              <TouchableOpacity
+                style={styles.eyeIcon}
+                onPress={() => setShowPassword(!showPassword)}
+                activeOpacity={0.7}
+              >
+                <MaterialIcons
+                  name={showPassword ? 'visibility' : 'visibility-off'}
+                  size={24}
+                  color="#999"
+                />
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Error Message */}
@@ -554,6 +595,20 @@ const styles = StyleSheet.create({
     color: '#333',
     borderWidth: 1,
     borderColor: '#E0E0E0',
+  },
+  passwordContainer: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  passwordInput: {
+    flex: 1,
+    paddingRight: 50,
+  },
+  eyeIcon: {
+    position: 'absolute',
+    right: 16,
+    padding: 4,
   },
   signUpButton: {
     backgroundColor: '#FFD700',

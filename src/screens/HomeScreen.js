@@ -1,10 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   Dimensions,
+  Image,
+  ImageBackground,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -12,6 +14,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 const { width, height } = Dimensions.get('window');
 
 export default function HomeScreen({ navigation }) {
+  const [imageError, setImageError] = useState(false);
+  
   const handleNavigate = (screen) => {
     try {
       if (navigation && navigation.navigate) {
@@ -22,13 +26,27 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
+  // Background image URL - using a beautiful Nigerian apartment/home image
+  const backgroundImage = 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=1200&q=80';
+  const defaultBackground = 'https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=1200&q=80';
+
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
-      <View style={styles.content}>
-        <View style={styles.logoContainer}>
-          <MaterialIcons name="home" size={60} color="#333" />
-        </View>
+      <ImageBackground
+        source={{ uri: imageError ? defaultBackground : backgroundImage }}
+        style={styles.backgroundImage}
+        imageStyle={styles.backgroundImageStyle}
+        onError={() => {
+          console.log('Background image failed to load, using default');
+          setImageError(true);
+        }}
+      >
+        <View style={styles.overlay} />
+        <View style={styles.content}>
+          <View style={styles.logoContainer}>
+            <MaterialIcons name="home" size={60} color="#333" />
+          </View>
         <Text style={styles.title}>Nigerian Apartments</Text>
         <Text style={styles.subtitle}>Find Your Perfect Home</Text>
         <Text style={styles.description}>
@@ -50,6 +68,7 @@ export default function HomeScreen({ navigation }) {
           </TouchableOpacity>
         </View>
       </View>
+      </ImageBackground>
     </View>
   );
 }
@@ -58,14 +77,28 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#FFFFFF',
+  },
+  backgroundImage: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+  },
+  backgroundImageStyle: {
+    opacity: 0.3,
+    resizeMode: 'cover',
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 255, 255, 0.85)',
   },
   content: {
     alignItems: 'center',
     width: '100%',
     maxWidth: 400,
+    padding: 20,
+    zIndex: 1,
   },
   logoContainer: {
     width: 120,

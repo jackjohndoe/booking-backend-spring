@@ -18,7 +18,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { Calendar } from 'react-native-calendars';
-import { WebView } from 'react-native-webview';
+import PlatformWebView from '../components/PlatformWebView';
 import { hybridFavoriteService } from '../services/hybridService';
 
 const { width } = Dimensions.get('window');
@@ -229,6 +229,13 @@ export default function ApartmentDetailsScreen() {
     if (unavailableDates[day.dateString]?.disabled) {
       alert('Unavailable - choose another date please');
       setDateConflictError('The selected check-in date is unavailable');
+      return;
+    }
+    
+    // Validate that check-in date is before check-out date (if check-out is already selected)
+    if (checkOutDate && day.dateString >= checkOutDate) {
+      alert('Check-in date must be before check-out date');
+      setDateConflictError('Check-in date must be before check-out date');
       return;
     }
     
@@ -482,6 +489,9 @@ export default function ApartmentDetailsScreen() {
   // Create interactive map HTML with multiple fallback tile providers for reliability
   const getMapHtml = () => {
     const { lat, lng } = locationCoords;
+    // Validate coordinates - use default if invalid
+    const validLat = (lat && !isNaN(lat) && lat !== 0) ? lat : 6.5244; // Default to Lagos
+    const validLng = (lng && !isNaN(lng) && lng !== 0) ? lng : 3.3792; // Default to Lagos
     const location = (apartment?.location || 'Nigeria').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, ' ');
     // Using OpenStreetMap with Leaflet.js - multiple tile provider fallbacks for Android reliability
     return `<!DOCTYPE html>
@@ -505,8 +515,8 @@ export default function ApartmentDetailsScreen() {
         var mapLoaded = false;
         var retryCount = 0;
         var maxRetries = 3;
-        var lat = ${lat};
-        var lng = ${lng};
+        var lat = ${validLat};
+        var lng = ${validLng};
         var location = '${location}';
         
         function loadLeaflet() {
@@ -540,6 +550,11 @@ export default function ApartmentDetailsScreen() {
             mapLoaded = true;
             var mapDiv = document.getElementById('map');
             mapDiv.innerHTML = '';
+            
+            // Validate coordinates before creating map
+            if (isNaN(lat) || isNaN(lng) || lat === 0 || lng === 0) {
+              throw new Error('Invalid coordinates');
+            }
             
             var map = L.map('map', {
               center: [lat, lng],
@@ -650,14 +665,24 @@ export default function ApartmentDetailsScreen() {
     const location = encodeURIComponent(apartment?.location || 'Nigeria');
     const { lat, lng } = locationCoords;
     
-    // Try to open in Google Maps app first, then fallback to browser
-    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+    // Validate coordinates - use location string if coordinates are invalid
+    const validLat = (lat && !isNaN(lat) && lat !== 0) ? lat : null;
+    const validLng = (lng && !isNaN(lng) && lng !== 0) ? lng : null;
+    
+    let mapsUrl;
+    if (validLat && validLng) {
+      // Use coordinates if valid
+      mapsUrl = `https://www.google.com/maps/search/?api=1&query=${validLat},${validLng}`;
+    } else {
+      // Fallback to location string
+      mapsUrl = `https://www.google.com/maps/search/${location}`;
+    }
     
     Linking.canOpenURL(mapsUrl).then(supported => {
       if (supported) {
         Linking.openURL(mapsUrl);
       } else {
-        // Fallback to browser
+        // Fallback to browser with location string
         Linking.openURL(`https://www.google.com/maps/search/${location}`);
       }
     }).catch(err => {
@@ -679,6 +704,7 @@ export default function ApartmentDetailsScreen() {
   };
 
   const handleMapError = (syntheticEvent) => {
+    console.error('Map error:', syntheticEvent);
     if (mapTimeoutRef.current) {
       clearTimeout(mapTimeoutRef.current);
       mapTimeoutRef.current = null;
@@ -1089,7 +1115,7 @@ export default function ApartmentDetailsScreen() {
                       <Text style={styles.mapLoadingText}>Loading map...</Text>
                     </View>
                   )}
-                  <WebView
+                  <PlatformWebView
                     source={{ 
                       html: getMapHtml(),
                       baseUrl: 'https://unpkg.com'

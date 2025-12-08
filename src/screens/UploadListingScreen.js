@@ -19,9 +19,14 @@ import { useAuth } from '../hooks/useAuth';
 import { addListing, updateListing } from '../utils/listings';
 import { hybridApartmentService } from '../services/hybridService';
 import { notifyListingUploaded } from '../utils/notifications';
+import { getUserProfile } from '../utils/userStorage';
 
 // Helper to get ImagePicker - uses require with error handling
 const getImagePicker = () => {
+  // On web, expo-image-picker doesn't work, return null to use file input
+  if (Platform.OS === 'web') {
+    return null;
+  }
   try {
     return require('expo-image-picker');
   } catch (error) {
@@ -57,46 +62,40 @@ export default function UploadListingScreen() {
   const [profileData, setProfileData] = useState(null);
 
   // Load profile data for host information (use current user's profile)
+  // Optimized: Set initial values immediately, then load profile data asynchronously
   useEffect(() => {
-    const loadProfileData = async () => {
-      try {
-        // Only load if we have a current user
-        if (!user || !user.email) {
-          setHostName(user?.name || 'Property Owner');
-          setProfileData({
-            name: user?.name,
-            email: user?.email,
-          });
-          return;
-        }
+    // Set initial values immediately from user data (no delay)
+    const initialName = user?.name || 'Property Owner';
+    const initialEmail = user?.email || null;
+    setHostName(initialName);
+    setProfileData({
+      name: initialName,
+      email: initialEmail,
+    });
 
-        // Use user-specific storage to get the current user's profile
-        const { getUserProfile } = await import('../utils/userStorage');
-        const profileData = await getUserProfile(user.email);
-        
-        if (profileData) {
-          setProfileData(profileData);
-          // Set host name from profile
-          setHostName(profileData.name || user?.name || 'Property Owner');
-        } else {
-          // Use user data from auth if no profile data
-          setHostName(user?.name || 'Property Owner');
-          setProfileData({
-            name: user?.name,
-            email: user?.email,
-          });
+    // Load profile data asynchronously (non-blocking)
+    if (user?.email) {
+      // Use requestIdleCallback or setTimeout to defer non-critical loading
+      const loadProfileData = async () => {
+        try {
+          const profileData = await getUserProfile(user.email);
+          if (profileData) {
+            setProfileData(profileData);
+            setHostName(profileData.name || initialName);
+          }
+        } catch (error) {
+          console.error('Error loading profile data:', error);
+          // Keep initial values on error
         }
-      } catch (error) {
-        console.error('Error loading profile data:', error);
-        // On error, use user data from auth
-        setHostName(user?.name || 'Property Owner');
-        setProfileData({
-          name: user?.name,
-          email: user?.email,
-        });
+      };
+      
+      // Defer loading to not block initial render
+      if (typeof requestIdleCallback !== 'undefined') {
+        requestIdleCallback(loadProfileData, { timeout: 100 });
+      } else {
+        setTimeout(loadProfileData, 0);
       }
-    };
-    loadProfileData();
+    }
   }, [user]);
 
   useEffect(() => {
@@ -142,36 +141,25 @@ export default function UploadListingScreen() {
 
     setLoading(true);
     try {
-      // ALWAYS load fresh profile data before saving to ensure we have the latest profile picture
-      // Use current user's profile from user-specific storage
-      let currentProfileData = null;
+      // Use existing profileData (already loaded) or fallback to user data
+      // This avoids blocking save operation with async import
+      let currentProfileData = profileData || {
+        name: user?.name,
+        email: user?.email,
+      };
       
-      if (user && user.email) {
+      // Only refresh if we don't have profile data yet (non-blocking)
+      if (user?.email && !currentProfileData?.profilePicture) {
         try {
-          const { getUserProfile } = await import('../utils/userStorage');
           const freshProfileData = await getUserProfile(user.email);
           if (freshProfileData) {
             currentProfileData = freshProfileData;
             setProfileData(freshProfileData);
-            console.log('UploadListingScreen - Loaded fresh profile data for current user:', {
-              hasPicture: !!freshProfileData.profilePicture,
-              name: freshProfileData.name,
-              email: freshProfileData.email
-            });
           }
         } catch (error) {
           console.error('Error loading fresh profile data:', error);
-          // Fall back to existing profileData if available
-          currentProfileData = profileData;
+          // Continue with existing data
         }
-      }
-      
-      // If still no profile data, use user data from auth (current user)
-      if (!currentProfileData) {
-        currentProfileData = profileData || {
-          name: user?.name,
-          email: user?.email,
-        };
       }
       
       // CRITICAL: Always ensure we use the current user's email and name
@@ -211,34 +199,44 @@ export default function UploadListingScreen() {
         hostName: listingData.hostName
       });
 
+      let savedListing = null;
+      
       if (isEdit && listing) {
         try {
-          await hybridApartmentService.updateApartment(listing.id, listingData);
-          Alert.alert('Success', 'Listing updated successfully!');
+          savedListing = await hybridApartmentService.updateApartment(listing.id, listingData);
+          console.log('✅ Listing updated successfully:', savedListing?.id || listing.id);
         } catch (error) {
           console.error('Error updating listing to API:', error);
           // Fallback to local storage - FRONTEND PRESERVED
           // Pass user email explicitly
-          await updateListing(listing.id, listingData, user.email);
-          Alert.alert('Success', 'Listing updated successfully!');
+          savedListing = await updateListing(listing.id, listingData, user.email);
+          console.log('✅ Listing updated locally:', savedListing?.id || listing.id);
         }
+        Alert.alert('Success', 'Listing updated successfully!');
       } else {
         try {
-          await hybridApartmentService.createApartment(listingData);
+          savedListing = await hybridApartmentService.createApartment(listingData);
+          console.log('✅ Listing created successfully:', savedListing?.id);
           // Add notification for listing upload
           await notifyListingUploaded(listingData.title);
-          Alert.alert('Success', 'Listing created successfully!');
         } catch (error) {
           console.error('Error creating listing to API:', error);
           // Fallback to local storage - FRONTEND PRESERVED
           // Pass user email explicitly to ensure createdBy is set correctly
-          await addListing(listingData, user.email);
+          savedListing = await addListing(listingData, user.email);
+          console.log('✅ Listing created locally:', savedListing?.id);
           // Add notification for listing upload
           await notifyListingUploaded(listingData.title);
-          Alert.alert('Success', 'Listing created successfully!');
         }
+        Alert.alert('Success', 'Listing created successfully!');
       }
 
+      // Ensure data is fully saved before navigating back
+      // This ensures listings appear in real-time on both Explore and MyListings screens
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      // Navigate back - screens will refresh via useFocusEffect
+      // ExploreScreen and MyListingsScreen both use useFocusEffect to reload data
       navigation.goBack();
     } catch (error) {
       console.error('Error saving listing:', error);
@@ -261,8 +259,75 @@ export default function UploadListingScreen() {
     return cleaned;
   };
 
+  // Handle image selection on web platform
+  const handleWebImageSelect = () => {
+    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
+    
+    // Create a file input element
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = true;
+    input.style.display = 'none';
+    
+    input.onchange = (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
+      
+      // Convert files to data URLs
+      const newImageUris = [];
+      let processedCount = 0;
+      
+      files.forEach((file) => {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const dataUrl = event.target?.result;
+          if (dataUrl) {
+            newImageUris.push(dataUrl);
+            processedCount++;
+            
+            // When all files are processed, update state
+            if (processedCount === files.length) {
+              setSelectedImages(prev => {
+                const existingUris = new Set(prev);
+                const uniqueNewUris = newImageUris.filter(uri => !existingUris.has(uri));
+                return [...prev, ...uniqueNewUris];
+              });
+              
+              Alert.alert('Success', `${files.length} image(s) added successfully!`);
+            }
+          }
+        };
+        reader.onerror = () => {
+          console.error('Error reading file:', file.name);
+          processedCount++;
+          if (processedCount === files.length && newImageUris.length > 0) {
+            setSelectedImages(prev => {
+              const existingUris = new Set(prev);
+              const uniqueNewUris = newImageUris.filter(uri => !existingUris.has(uri));
+              return [...prev, ...uniqueNewUris];
+            });
+            Alert.alert('Success', `${newImageUris.length} image(s) added successfully!`);
+          }
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+    
+    // Trigger file selection
+    document.body.appendChild(input);
+    input.click();
+    document.body.removeChild(input);
+  };
+
   const handleSelectImage = async () => {
     try {
+      // Handle web platform with file input
+      if (Platform.OS === 'web') {
+        handleWebImageSelect();
+        return;
+      }
+
       const ImagePicker = getImagePicker();
       
       if (!ImagePicker) {
@@ -327,6 +392,12 @@ export default function UploadListingScreen() {
 
   const handleTakePhoto = async () => {
     try {
+      // On web, camera is not available
+      if (Platform.OS === 'web') {
+        Alert.alert('Camera Not Available', 'Camera is not available in web browser. Please use "Add Images" to select from your computer.');
+        return;
+      }
+
       const ImagePicker = getImagePicker();
       
       if (!ImagePicker) {
@@ -376,6 +447,7 @@ export default function UploadListingScreen() {
           allowsEditing: false,
           allowsMultipleSelection: true,
           quality: 0.8,
+          selectionLimit: 0, // 0 = unlimited selection
         });
       }
 
@@ -383,10 +455,17 @@ export default function UploadListingScreen() {
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const newImageUris = result.assets.map(asset => asset.uri);
         
-        // Add new images to existing ones
-        setSelectedImages(prev => [...prev, ...newImageUris]);
+        // Add new images to existing ones (avoid duplicates)
+        setSelectedImages(prev => {
+          const existingUris = new Set(prev);
+          const uniqueNewUris = newImageUris.filter(uri => !existingUris.has(uri));
+          return [...prev, ...uniqueNewUris];
+        });
         
-        Alert.alert('Success', `${newImageUris.length} image(s) added!`);
+        const addedCount = result.assets.length;
+        if (addedCount > 0) {
+          Alert.alert('Success', `${addedCount} image(s) added successfully!`);
+        }
       }
     } catch (error) {
       console.error('Error picking image:', error);
@@ -616,6 +695,7 @@ export default function UploadListingScreen() {
             <TouchableOpacity
               style={styles.addImageButton}
               onPress={handleSelectImage}
+              activeOpacity={0.7}
             >
               <MaterialIcons name="add-photo-alternate" size={24} color="#FFD700" />
               <Text style={styles.addImageButtonText}>
@@ -626,6 +706,7 @@ export default function UploadListingScreen() {
               <TouchableOpacity
                 style={styles.cameraButton}
                 onPress={handleTakePhoto}
+                activeOpacity={0.7}
               >
                 <MaterialIcons name="camera-alt" size={24} color="#FFD700" />
                 <Text style={styles.addImageButtonText}>Take Photo</Text>

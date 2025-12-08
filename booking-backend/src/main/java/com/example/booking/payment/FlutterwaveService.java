@@ -552,15 +552,39 @@ public class FlutterwaveService {
             if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
                     && flutterwaveResponse.getData() != null) {
                 TransactionVerificationData data = flutterwaveResponse.getData();
-                BigDecimal amount = data.getAmount() != null ? 
-                    new BigDecimal(data.getAmount()).divide(new BigDecimal("100")) : null;
                 
+                // CRITICAL: Use the charged amount (what customer paid), not the settled amount (after fees)
+                // The 'amount' field is the amount charged to the customer (full amount)
+                // The 'amount_settled' field is what the merchant receives (after Flutterwave fees)
+                // For wallet funding, we use the charged amount because that's what the customer paid
+                BigDecimal amountCharged = data.getAmount() != null ? 
+                    new BigDecimal(data.getAmount()).divide(new BigDecimal("100")) : null;
+                BigDecimal amountSettled = data.getAmountSettled() != null ? 
+                    new BigDecimal(data.getAmountSettled()).divide(new BigDecimal("100")) : null;
+                
+                // Log amount details for verification
+                if (amountCharged != null) {
+                    log.info("Transaction verification - Amount charged (customer paid): NGN {}, Amount settled (after fees): NGN {}, txRef: {}", 
+                            amountCharged, amountSettled != null ? amountSettled : "N/A", data.getTxRef());
+                }
+                
+                // Extract customer email from verification response
+                String customerEmail = null;
+                if (data.getCustomer() != null) {
+                    Object emailObj = data.getCustomer().get("email");
+                    if (emailObj != null) {
+                        customerEmail = emailObj.toString();
+                    }
+                }
+                
+                // Use charged amount for wallet funding (what customer actually paid)
                 return TransactionVerification.builder()
                         .txRef(data.getTxRef())
                         .flwRef(data.getFlwRef())
                         .status(data.getStatus())
-                        .amount(amount)
+                        .amount(amountCharged) // Use charged amount, not settled amount
                         .currency(data.getCurrency())
+                        .customerEmail(customerEmail)
                         .message(flutterwaveResponse.getMessage())
                         .build();
             } else {
@@ -598,48 +622,202 @@ public class FlutterwaveService {
         }
         
         try {
-            // Build query parameters - fetch transactions by customer email
-            String url = TRANSACTIONS_URL + "?customer_email=" + java.net.URLEncoder.encode(customerEmail, "UTF-8");
+            java.util.List<TransactionVerification> allTransactions = new java.util.ArrayList<>();
             
-            HttpEntity<Void> entity = new HttpEntity<>(createAuthenticatedHeaders());
-            ResponseEntity<FlutterwaveTransactionsResponse> response = restTemplate.exchange(
-                    url,
-                    HttpMethod.GET,
-                    entity,
-                    FlutterwaveTransactionsResponse.class
-            );
+            // Try multiple approaches to fetch all transactions
+            // 1. First try without date filter to get ALL transactions (Flutterwave may not require dates)
+            // 2. If that fails or returns empty, try with extended date range (last 2 years)
+            java.time.LocalDate endDate = java.time.LocalDate.now();
+            java.time.LocalDate startDate = endDate.minusYears(2); // Extended to 2 years to catch older transactions
+            
+            // Try fetching without date filter first (some Flutterwave accounts may support this)
+            java.util.List<TransactionVerification> transactionsWithoutDate = new java.util.ArrayList<>();
+            try {
+                String urlNoDate = TRANSACTIONS_URL + "?customer_email=" + java.net.URLEncoder.encode(customerEmail, "UTF-8");
+                log.info("Attempting to fetch ALL Flutterwave transactions (no date filter) for email: {}", customerEmail);
+                
+                HttpEntity<Void> entityNoDate = new HttpEntity<>(createAuthenticatedHeaders());
+                ResponseEntity<FlutterwaveTransactionsResponse> responseNoDate = restTemplate.exchange(
+                        urlNoDate,
+                        HttpMethod.GET,
+                        entityNoDate,
+                        FlutterwaveTransactionsResponse.class
+                );
+                
+                FlutterwaveTransactionsResponse flutterwaveResponseNoDate = responseNoDate.getBody();
+                if (flutterwaveResponseNoDate != null && "success".equalsIgnoreCase(flutterwaveResponseNoDate.getStatus()) 
+                        && flutterwaveResponseNoDate.getData() != null && !flutterwaveResponseNoDate.getData().isEmpty()) {
+                    log.info("✅ Successfully fetched transactions without date filter, processing...");
+                    for (FlutterwaveTransactionData data : flutterwaveResponseNoDate.getData()) {
+                        if (data.getStatus() != null && 
+                            ("successful".equalsIgnoreCase(data.getStatus()) || 
+                             "SUCCESSFUL".equalsIgnoreCase(data.getStatus()) ||
+                             "completed".equalsIgnoreCase(data.getStatus()) ||
+                             "COMPLETED".equalsIgnoreCase(data.getStatus()))) {
+                            BigDecimal amount = data.getAmount() != null ? 
+                                new BigDecimal(data.getAmount()).divide(new BigDecimal("100")) : null;
+                            
+                            boolean emailMatches = true;
+                            if (data.getCustomer() != null && data.getCustomer().containsKey("email")) {
+                                String transactionEmail = (String) data.getCustomer().get("email");
+                                if (transactionEmail != null && !transactionEmail.equalsIgnoreCase(customerEmail)) {
+                                    emailMatches = false;
+                                }
+                            }
+                            
+                            if (emailMatches) {
+                                transactionsWithoutDate.add(TransactionVerification.builder()
+                                        .txRef(data.getTxRef())
+                                        .flwRef(data.getFlwRef())
+                                        .status(data.getStatus())
+                                        .amount(amount)
+                                        .currency(data.getCurrency())
+                                        .customerEmail(customerEmail)
+                                        .message("Fetched from Flutterwave (no date filter)")
+                                        .build());
+                            }
+                        }
+                    }
+                    log.info("✅ Fetched {} transactions without date filter", transactionsWithoutDate.size());
+                }
+            } catch (Exception e) {
+                log.debug("Could not fetch transactions without date filter (this is normal if Flutterwave requires dates): {}", e.getMessage());
+            }
+            
+            // Also fetch with date range as fallback/additional method
+            String url = TRANSACTIONS_URL + "?customer_email=" + java.net.URLEncoder.encode(customerEmail, "UTF-8");
+            url += "&from=" + startDate.toString() + "&to=" + endDate.toString();
+            url += "&page=1"; // Start with page 1
+            
+            log.info("Fetching Flutterwave transactions with date range: {} to {} (2 years)", startDate, endDate);
+            
+            // Fetch all pages of transactions
+            int currentPage = 1;
+            int maxPages = 20; // Increased limit to fetch more pages
+            boolean hasMorePages = true;
+            
+            while (hasMorePages && currentPage <= maxPages) {
+                String pageUrl = TRANSACTIONS_URL + "?customer_email=" + java.net.URLEncoder.encode(customerEmail, "UTF-8");
+                pageUrl += "&from=" + startDate.toString() + "&to=" + endDate.toString();
+                pageUrl += "&page=" + currentPage;
+                
+                log.debug("Fetching page {} of Flutterwave transactions...", currentPage);
+                
+                HttpEntity<Void> entity = new HttpEntity<>(createAuthenticatedHeaders());
+                ResponseEntity<FlutterwaveTransactionsResponse> response = restTemplate.exchange(
+                        pageUrl,
+                        HttpMethod.GET,
+                        entity,
+                        FlutterwaveTransactionsResponse.class
+                );
 
-            FlutterwaveTransactionsResponse flutterwaveResponse = response.getBody();
-            if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
-                    && flutterwaveResponse.getData() != null) {
-                java.util.List<TransactionVerification> transactions = new java.util.ArrayList<>();
-                for (FlutterwaveTransactionData data : flutterwaveResponse.getData()) {
-                    // Only include successful/completed transactions
-                    if (data.getStatus() != null && 
-                        ("successful".equalsIgnoreCase(data.getStatus()) || 
-                         "SUCCESSFUL".equalsIgnoreCase(data.getStatus()) ||
-                         "completed".equalsIgnoreCase(data.getStatus()) ||
-                         "COMPLETED".equalsIgnoreCase(data.getStatus()))) {
-                        BigDecimal amount = data.getAmount() != null ? 
-                            new BigDecimal(data.getAmount()).divide(new BigDecimal("100")) : null;
-                        
-                        transactions.add(TransactionVerification.builder()
-                                .txRef(data.getTxRef())
-                                .flwRef(data.getFlwRef())
-                                .status(data.getStatus())
-                                .amount(amount)
-                                .currency(data.getCurrency())
-                                .message("Fetched from Flutterwave")
-                                .build());
+                FlutterwaveTransactionsResponse flutterwaveResponse = response.getBody();
+                if (flutterwaveResponse != null && "success".equalsIgnoreCase(flutterwaveResponse.getStatus()) 
+                        && flutterwaveResponse.getData() != null && !flutterwaveResponse.getData().isEmpty()) {
+                    
+                    int pageTransactions = 0;
+                    for (FlutterwaveTransactionData data : flutterwaveResponse.getData()) {
+                        // Only include successful/completed transactions
+                        if (data.getStatus() != null && 
+                            ("successful".equalsIgnoreCase(data.getStatus()) || 
+                             "SUCCESSFUL".equalsIgnoreCase(data.getStatus()) ||
+                             "completed".equalsIgnoreCase(data.getStatus()) ||
+                             "COMPLETED".equalsIgnoreCase(data.getStatus()))) {
+                            BigDecimal amount = data.getAmount() != null ? 
+                                new BigDecimal(data.getAmount()).divide(new BigDecimal("100")) : null;
+                            
+                            // Verify customer email matches (if customer data is available)
+                            boolean emailMatches = true;
+                            if (data.getCustomer() != null && data.getCustomer().containsKey("email")) {
+                                String transactionEmail = (String) data.getCustomer().get("email");
+                                if (transactionEmail != null && !transactionEmail.equalsIgnoreCase(customerEmail)) {
+                                    emailMatches = false;
+                                    log.debug("Skipping transaction {} - email mismatch: {} vs {}", 
+                                            data.getTxRef(), transactionEmail, customerEmail);
+                                }
+                            }
+                            
+                            if (emailMatches) {
+                                // Check if we already have this transaction (avoid duplicates)
+                                // Check both in allTransactions and transactionsWithoutDate
+                                boolean alreadyExists = allTransactions.stream()
+                                    .anyMatch(t -> t.getTxRef() != null && t.getTxRef().equals(data.getTxRef())) ||
+                                    transactionsWithoutDate.stream()
+                                    .anyMatch(t -> t.getTxRef() != null && t.getTxRef().equals(data.getTxRef()));
+                                
+                                if (!alreadyExists) {
+                                    allTransactions.add(TransactionVerification.builder()
+                                            .txRef(data.getTxRef())
+                                            .flwRef(data.getFlwRef())
+                                            .status(data.getStatus())
+                                            .amount(amount)
+                                            .currency(data.getCurrency())
+                                            .customerEmail(customerEmail)
+                                            .message("Fetched from Flutterwave")
+                                            .build());
+                                    pageTransactions++;
+                                    log.debug("Added transaction: txRef={}, amount={}, status={}", 
+                                            data.getTxRef(), amount, data.getStatus());
+                                } else {
+                                    log.debug("Skipping duplicate transaction: txRef={}", data.getTxRef());
+                                }
+                            }
+                        }
+                    }
+                    
+                    log.debug("Page {}: Found {} successful transactions (total so far: {})", 
+                            currentPage, pageTransactions, allTransactions.size());
+                    
+                    // Check if there are more pages (if current page has fewer than expected, assume no more pages)
+                    if (flutterwaveResponse.getData().size() < 20) { // Assuming 20 per page
+                        hasMorePages = false;
+                    } else {
+                        currentPage++;
+                    }
+                } else {
+                    // No more data or error
+                    hasMorePages = false;
+                    if (flutterwaveResponse != null && !"success".equalsIgnoreCase(flutterwaveResponse.getStatus())) {
+                        String errorMsg = flutterwaveResponse.getMessage();
+                        log.warn("Flutterwave API returned non-success status on page {}: {}", currentPage, errorMsg);
                     }
                 }
-                log.info("Fetched {} successful transactions from Flutterwave for email: {}", transactions.size(), customerEmail);
-                return transactions;
-            } else {
-                String errorMsg = flutterwaveResponse != null ? flutterwaveResponse.getMessage() : "Unknown error from Flutterwave";
-                log.warn("No transactions found or error fetching transactions. Message: {}", errorMsg);
-                return java.util.Collections.emptyList();
             }
+            
+            // Merge transactions from both methods (without date filter and with date filter)
+            // Remove duplicates based on txRef
+            java.util.Map<String, TransactionVerification> uniqueTransactions = new java.util.HashMap<>();
+            
+            // Add transactions without date filter first
+            for (TransactionVerification txn : transactionsWithoutDate) {
+                if (txn.getTxRef() != null) {
+                    uniqueTransactions.put(txn.getTxRef(), txn);
+                }
+            }
+            
+            // Add transactions with date filter (will overwrite if duplicate, but they should be the same)
+            for (TransactionVerification txn : allTransactions) {
+                if (txn.getTxRef() != null) {
+                    uniqueTransactions.put(txn.getTxRef(), txn);
+                }
+            }
+            
+            java.util.List<TransactionVerification> finalTransactions = new java.util.ArrayList<>(uniqueTransactions.values());
+            
+            log.info("✅ Fetched {} total unique successful transactions from Flutterwave for email: {} ({} without date filter, {} with date filter, searched {} pages)", 
+                    finalTransactions.size(), customerEmail, transactionsWithoutDate.size(), allTransactions.size(), currentPage - 1);
+            
+            // Log transaction references for debugging
+            if (!finalTransactions.isEmpty()) {
+                log.info("Transaction references found: {}", 
+                        finalTransactions.stream()
+                                .map(t -> t.getTxRef())
+                                .limit(10)
+                                .collect(java.util.stream.Collectors.joining(", ")) + 
+                        (finalTransactions.size() > 10 ? " ... (and " + (finalTransactions.size() - 10) + " more)" : ""));
+            }
+            
+            return finalTransactions;
         } catch (HttpClientErrorException | HttpServerErrorException e) {
             String responseBody = e.getResponseBodyAsString();
             log.warn("Flutterwave API error fetching transactions: HTTP {} - Response: {}", 
@@ -803,7 +981,9 @@ public class FlutterwaveService {
         @JsonProperty("flw_ref")
         private String flwRef;
         private String status;
-        private Integer amount; // Amount in kobo
+        private Integer amount; // Amount charged to customer in kobo (full amount, not settled amount)
+        @JsonProperty("amount_settled")
+        private Integer amountSettled; // Amount to be settled to merchant in kobo (after fees)
         private String currency;
         @JsonProperty("customer")
         private Map<String, Object> customer;
@@ -815,6 +995,7 @@ public class FlutterwaveService {
         private String status;
         private BigDecimal amount;
         private String currency;
+        private String customerEmail;
         private String message;
 
         // Manual getters (Lombok not working in Docker build)
@@ -839,6 +1020,10 @@ public class FlutterwaveService {
             return currency;
         }
 
+        public String getCustomerEmail() {
+            return customerEmail;
+        }
+
         public String getMessage() {
             return message;
         }
@@ -854,6 +1039,7 @@ public class FlutterwaveService {
             private String status;
             private BigDecimal amount;
             private String currency;
+            private String customerEmail;
             private String message;
 
             public TransactionVerificationBuilder txRef(String txRef) {
@@ -881,6 +1067,11 @@ public class FlutterwaveService {
                 return this;
             }
 
+            public TransactionVerificationBuilder customerEmail(String customerEmail) {
+                this.customerEmail = customerEmail;
+                return this;
+            }
+
             public TransactionVerificationBuilder message(String message) {
                 this.message = message;
                 return this;
@@ -893,6 +1084,7 @@ public class FlutterwaveService {
                 verification.status = this.status;
                 verification.amount = this.amount;
                 verification.currency = this.currency;
+                verification.customerEmail = this.customerEmail;
                 verification.message = this.message;
                 return verification;
             }

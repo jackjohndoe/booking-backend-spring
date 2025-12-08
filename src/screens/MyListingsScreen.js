@@ -13,12 +13,14 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { getListings, deleteListing } from '../utils/listings';
+import { getListings, deleteListing, getMyListings } from '../utils/listings';
 import { hybridApartmentService } from '../services/hybridService';
 import { notifyListingDeleted } from '../utils/notifications';
+import { useAuth } from '../hooks/useAuth';
 
 export default function MyListingsScreen() {
   const navigation = useNavigation();
+  const { user } = useAuth();
   const [listings, setListings] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -27,7 +29,7 @@ export default function MyListingsScreen() {
     try {
       setLoading(true);
       // Get current user's listings from global storage (filtered by user email)
-      const { getMyListings } = await import('../utils/listings');
+      // Use top-level import for faster loading
       const userListings = await getMyListings();
       console.log('MyListingsScreen - Loaded my listings:', userListings.length);
       
@@ -82,7 +84,6 @@ export default function MyListingsScreen() {
       console.error('Error loading listings:', error);
       // Try direct load as fallback
       try {
-        const { getMyListings } = await import('../utils/listings');
         const directListings = await getMyListings();
         console.log('MyListingsScreen - Fallback loaded:', directListings.length);
         setListings(directListings);
@@ -111,7 +112,7 @@ export default function MyListingsScreen() {
   const handleDeleteListing = (listingId, listingTitle) => {
     Alert.alert(
       'Delete Listing',
-      `Are you sure you want to delete "${listingTitle}"?`,
+      `Are you sure you want to delete "${listingTitle}"? This action cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -119,23 +120,40 @@ export default function MyListingsScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              // Use hybrid service to delete (removes from both userListings and cached_apartments)
+              console.log('🗑️ Deleting listing:', listingId, listingTitle);
+              
+              // Verify user is authenticated
+              if (!user || !user.email) {
+                throw new Error('You must be logged in to delete listings');
+              }
+              
+              // Optimistically remove from UI immediately for better UX
+              setListings(prevListings => prevListings.filter(listing => listing.id !== listingId));
+              
+              // Use hybrid service to delete (removes from API, local storage, sync queue, and cache)
               await hybridApartmentService.deleteApartment(listingId);
+              
               // Add notification for listing deletion
-              await notifyListingDeleted(listingTitle);
-              loadListings(); // Reload to show updated list
+              try {
+                await notifyListingDeleted(listingTitle);
+              } catch (notifError) {
+                console.warn('Could not send deletion notification:', notifError);
+              }
+              
+              // Reload to ensure consistency (in case of any edge cases)
+              await loadListings();
+              
+              // Show success message
               Alert.alert('Success', 'Listing deleted successfully');
             } catch (error) {
-              console.error('Error deleting listing:', error);
-              // Fallback to local deletion if hybrid service fails
-              try {
-                await deleteListing(listingId);
-                await notifyListingDeleted(listingTitle);
-                loadListings();
-                Alert.alert('Success', 'Listing deleted successfully');
-              } catch (fallbackError) {
-                Alert.alert('Error', 'Failed to delete listing');
-              }
+              console.error('❌ Error deleting listing:', error);
+              
+              // Reload listings to restore the deleted item if deletion failed
+              await loadListings();
+              
+              // Show error message
+              const errorMessage = error.message || 'Failed to delete listing. Please try again.';
+              Alert.alert('Error', errorMessage);
             }
           },
         },

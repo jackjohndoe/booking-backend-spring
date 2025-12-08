@@ -1,10 +1,11 @@
-﻿// API Configuration
+// API Configuration
 // Update this file if the backend URL changes
 
 export const API_CONFIG = {
-  BASE_URL: 'https://booking-backend-staging.up.railway.app',
-  TIMEOUT: 30000, // 30 seconds
+  BASE_URL: 'https://booking-staging-54a6.up.railway.app',
+  TIMEOUT: 60000, // 60 seconds - increased for better reliability
   RETRY_ATTEMPTS: 3,
+  RETRY_DELAY: 1000, // Initial delay in ms (exponential backoff)
 };
 
 // API Endpoints
@@ -37,16 +38,10 @@ export const API_ENDPOINTS = {
   },
   // Wallet
   WALLET: {
-    BALANCE: '/api/wallet',
-    FUND: '/api/wallet/deposit',
-    WITHDRAW: '/api/wallet/withdraw',
+    BALANCE: '/api/wallet/balance',
+    FUND: '/api/wallet/fund',
     TRANSACTIONS: '/api/wallet/transactions',
     PAY: '/api/wallet/pay',
-    SYNC: '/api/wallet/sync',
-    VERIFY_TRANSACTION: '/api/wallet/verify-transaction',
-    VERIFY_TRANSACTIONS: '/api/wallet/verify-transactions',
-    SYNC_ALL: '/api/wallet/sync-all',
-    VERIFY_PENDING: '/api/wallet/verify-pending', // Verify all pending transactions
   },
   // Favorites
   FAVORITES: {
@@ -59,12 +54,6 @@ export const API_ENDPOINTS = {
   EMAIL: {
     SEND_BOOKING_CONFIRMATION: '/api/email/send-booking-confirmation',
     SEND_HOST_NOTIFICATION: '/api/email/send-host-notification',
-  },
-  // Payments
-  PAYMENTS: {
-    CREATE_VIRTUAL_ACCOUNT: '/api/payments/flutterwave/create-virtual-account',
-    INITIALIZE_PAYMENT: '/api/payments/flutterwave/initialize',
-    VERIFY_PAYMENT: '/api/payments/flutterwave/verify',
   },
 };
 

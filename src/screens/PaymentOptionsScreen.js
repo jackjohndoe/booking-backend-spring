@@ -29,24 +29,37 @@ export default function PaymentOptionsScreen() {
       id: 'wallet',
       title: 'Pay with Wallet',
       icon: 'account-balance-wallet',
-      description: 'Get amazing discounts when you pay with wallet',
-    },
-    {
-      id: 'transfer',
-      title: 'Pay with Transfer',
-      icon: 'account-balance',
-      description: 'Bank transfer payment',
+      description: 'Get amazing discounts when you pay with wallet (via Flutterwave)',
     },
     {
       id: 'card',
       title: 'Pay with Card',
       icon: 'credit-card',
-      description: 'Credit or debit card',
+      description: 'Credit or debit card (via Flutterwave)',
+    },
+    {
+      id: 'transfer',
+      title: 'Pay with Transfer',
+      icon: 'account-balance',
+      description: 'Bank transfer payment (via Flutterwave)',
     },
   ];
 
   const handlePaymentMethodSelect = (methodId) => {
     setSelectedPaymentMethod(methodId);
+    
+    // Navigate immediately when "Pay with Card" is selected
+    if (methodId === 'card') {
+      navigation.navigate('CardPayment', {
+        apartment,
+        totalAmount,
+        checkInDate,
+        checkOutDate,
+        numberOfDays,
+        numberOfGuests,
+        paymentProvider: 'flutterwave',
+      });
+    }
   };
 
   const handleContinue = () => {
@@ -64,6 +77,7 @@ export default function PaymentOptionsScreen() {
         checkOutDate,
         numberOfDays,
         numberOfGuests,
+        paymentProvider: 'flutterwave',
       });
     } else if (selectedPaymentMethod === 'transfer') {
       navigation.navigate('TransferPayment', {
@@ -73,6 +87,7 @@ export default function PaymentOptionsScreen() {
         numberOfDays,
         numberOfGuests,
         totalAmount,
+        paymentProvider: 'flutterwave',
       });
     } else if (selectedPaymentMethod === 'wallet') {
       // Navigate to wallet screen with payment details
@@ -160,7 +175,7 @@ export default function PaymentOptionsScreen() {
         {/* Terms and Conditions */}
         <View style={styles.termsContainer}>
           <Text style={styles.termsText}>
-            By proceeding, you agree to the terms and conditions of payment. Your payment will be processed securely.
+            By proceeding, you agree to the terms and conditions of payment. All payments are processed securely through Flutterwave and held in escrow until booking conditions are met.
           </Text>
         </View>
       </ScrollView>

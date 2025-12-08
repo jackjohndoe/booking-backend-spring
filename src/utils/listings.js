@@ -154,33 +154,42 @@ export const updateListing = async (listingId, updatedData, userEmail = null) =>
 export const deleteListing = async (listingId, userEmail = null) => {
   try {
     const email = userEmail || await getCurrentUserEmail();
-    if (!email) {
-      throw new Error('User email is required to delete listing');
-    }
-
+    
     const allListings = await getListings();
-    const listing = allListings.find(l => l.id === listingId);
+    const listing = allListings.find(l => {
+      const id = l.id || l._id || String(l.id);
+      return id === listingId || String(id) === String(listingId);
+    });
     
     if (!listing) {
-      return false;
+      console.log('Listing not found in local storage (may have been deleted or is API-only):', listingId);
+      return true; // Return true if not found - it's already deleted or doesn't exist locally
     }
 
-    // Verify ownership
-    const isOwner = listing.createdBy === email || 
-                    listing.hostEmail === email ||
-                    (listing.createdBy && listing.createdBy.toLowerCase().trim() === email.toLowerCase().trim()) ||
-                    (listing.hostEmail && listing.hostEmail.toLowerCase().trim() === email.toLowerCase().trim());
+    // Verify ownership if email is available
+    if (email) {
+      const isOwner = listing.createdBy === email || 
+                      listing.hostEmail === email ||
+                      (listing.createdBy && listing.createdBy.toLowerCase().trim() === email.toLowerCase().trim()) ||
+                      (listing.hostEmail && listing.hostEmail.toLowerCase().trim() === email.toLowerCase().trim());
+      
+      if (!isOwner) {
+        throw new Error('You can only delete your own listings');
+      }
+    } else {
+      console.warn('No user email provided, deleting listing without ownership verification:', listingId);
+    }
+
+    const filteredListings = allListings.filter(l => {
+      const id = l.id || l._id || String(l.id);
+      return id !== listingId && String(id) !== String(listingId);
+    });
     
-    if (!isOwner) {
-      throw new Error('You can only delete your own listings');
-    }
-
-    const filteredListings = allListings.filter(listing => listing.id !== listingId);
     await AsyncStorage.setItem(ALL_LISTINGS_KEY, JSON.stringify(filteredListings));
-    console.log('Listing deleted from global storage:', listingId);
+    console.log('✅ Listing deleted from global storage:', listingId);
     return true;
   } catch (error) {
-    console.error('Error deleting listing:', error);
+    console.error('❌ Error deleting listing:', error);
     throw error;
   }
 };

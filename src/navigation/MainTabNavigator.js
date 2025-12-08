@@ -8,6 +8,7 @@ import ProfileScreen from '../screens/ProfileScreen';
 import NotificationsScreen from '../screens/NotificationsScreen';
 import EditProfileScreen from '../screens/EditProfileScreen';
 import BookingHistoryScreen from '../screens/BookingHistoryScreen';
+import MyBookingsScreen from '../screens/MyBookingsScreen';
 import MyListingsScreen from '../screens/MyListingsScreen';
 import UploadListingScreen from '../screens/UploadListingScreen';
 import AboutScreen from '../screens/AboutScreen';
@@ -20,6 +21,7 @@ import TransferPaymentScreen from '../screens/TransferPaymentScreen';
 import HostProfileScreen from '../screens/HostProfileScreen';
 import HostBookedListingsScreen from '../screens/HostBookedListingsScreen';
 import HostBookingDetailsScreen from '../screens/HostBookingDetailsScreen';
+import UserBookingDetailsScreen from '../screens/UserBookingDetailsScreen';
 import { Text, View, StyleSheet } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 
@@ -151,6 +153,16 @@ function ProfileStack() {
       <Stack.Screen 
         name="BookingHistory" 
         component={BookingHistoryScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen 
+        name="MyBookings" 
+        component={MyBookingsScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen 
+        name="UserBookingDetails" 
+        component={UserBookingDetailsScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen 

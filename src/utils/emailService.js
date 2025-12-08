@@ -134,7 +134,68 @@ const sendEmailViaSendGrid = async (to, subject, htmlContent, textContent) => {
 /**
  * Generate HTML email template for booking confirmation
  */
-const generateBookingConfirmationHTML = (bookingData, userName) => {
+/**
+ * Generate HTML email template for wallet top-up confirmation
+ */
+const generateWalletTopUpHTML = (amount, paymentMethod, paymentReference, newBalance, userName) => {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background-color: #4CAF50; color: #FFFFFF; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+          .content { background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; }
+          .details { background-color: white; padding: 15px; margin: 10px 0; border-radius: 5px; }
+          .detail-row { padding: 8px 0; border-bottom: 1px solid #eee; }
+          .detail-row:last-child { border-bottom: none; }
+          .label { font-weight: bold; color: #555; }
+          .amount { color: #4CAF50; font-size: 1.2em; font-weight: bold; }
+          .footer { text-align: center; padding: 20px; color: #777; font-size: 0.9em; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>💰 Wallet Top-Up Confirmed!</h1>
+          </div>
+          <div class="content">
+            <p>Dear ${userName},</p>
+            <p>Your wallet has been successfully topped up. Here are the details:</p>
+            
+            <div class="details">
+              <div class="detail-row">
+                <span class="label">Amount Added:</span> <span class="amount">₦${amount.toLocaleString()}</span>
+              </div>
+              <div class="detail-row">
+                <span class="label">Payment Method:</span> ${paymentMethod || 'N/A'}
+              </div>
+              ${paymentReference ? `<div class="detail-row">
+                <span class="label">Payment Reference:</span> ${paymentReference}
+              </div>` : ''}
+              <div class="detail-row">
+                <span class="label">New Wallet Balance:</span> <span class="amount">₦${newBalance.toLocaleString()}</span>
+              </div>
+              <div class="detail-row">
+                <span class="label">Transaction Date:</span> ${new Date().toLocaleDateString()}
+              </div>
+            </div>
+            
+            <p>Your wallet is now ready for use. You can make bookings and payments directly from your wallet.</p>
+            <p>Thank you for using our service!</p>
+          </div>
+          <div class="footer">
+            <p>This is an automated confirmation email. Please do not reply to this email.</p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+};
+
+const generateBookingConfirmationHTML = (bookingData, userName, topUpAmount = null, newBalance = null) => {
   return `
     <!DOCTYPE html>
     <html>
@@ -162,6 +223,15 @@ const generateBookingConfirmationHTML = (bookingData, userName) => {
             <p>Dear ${userName},</p>
             <p>Congratulations! Your booking has been confirmed. Here are your booking details:</p>
             
+            ${topUpAmount ? `<div class="details" style="background-color: #e8f5e9; border-left: 4px solid #4CAF50; margin-bottom: 15px;">
+              <div class="detail-row">
+                <span class="label">💰 Wallet Top-Up:</span> <span class="amount">₦${topUpAmount.toLocaleString()}</span>
+              </div>
+              ${newBalance ? `<div class="detail-row">
+                <span class="label">New Wallet Balance:</span> <span class="amount">₦${newBalance.toLocaleString()}</span>
+              </div>` : ''}
+            </div>` : ''}
+            
             <div class="details">
               <div class="detail-row">
                 <span class="label">Apartment:</span> ${bookingData.title || 'N/A'}
@@ -179,8 +249,11 @@ const generateBookingConfirmationHTML = (bookingData, userName) => {
                 <span class="label">Duration:</span> ${bookingData.numberOfDays || 1} day(s)
               </div>
               <div class="detail-row">
-                <span class="label">Guests:</span> ${bookingData.numberOfGuests || 1}
+                <span class="label">Number of Guests:</span> ${bookingData.numberOfGuests || 1}
               </div>
+              ${bookingData.paymentReference || bookingData.txRef ? `<div class="detail-row">
+                <span class="label">Payment Reference:</span> ${bookingData.paymentReference || bookingData.txRef || 'N/A'}
+              </div>` : ''}
               <div class="detail-row">
                 <span class="label">Payment Method:</span> ${bookingData.paymentMethod || 'N/A'}
               </div>
@@ -188,7 +261,10 @@ const generateBookingConfirmationHTML = (bookingData, userName) => {
                 <span class="label">Total Amount:</span> <span class="amount">₦${(bookingData.totalAmount || 0).toLocaleString()}</span>
               </div>
               <div class="detail-row">
-                <span class="label">Booking Date:</span> ${new Date().toLocaleDateString()}
+                <span class="label">Transaction Date:</span> ${new Date(bookingData.bookingDate || Date.now()).toLocaleDateString()}
+              </div>
+              <div class="detail-row">
+                <span class="label">Booking Status:</span> ${bookingData.status || 'Confirmed'}
               </div>
             </div>
             
@@ -208,6 +284,12 @@ const generateBookingConfirmationHTML = (bookingData, userName) => {
  * Generate HTML email template for host notification
  */
 const generateHostNotificationHTML = (bookingData, userName, hostName, userEmail, userPhone, userAddress) => {
+  // Fees set to 0 until changed
+  const cleaningFee = 0; // Fixed cleaning fee: ₦0 (set to 0 until changed)
+  const serviceFee = 0; // Fixed service fee: ₦0 (set to 0 until changed)
+  const totalServiceFees = cleaningFee + serviceFee; // Total fees (currently 0)
+  const hostReceives = Math.max(0, (bookingData.totalAmount || 0) - totalServiceFees);
+  
   return `
     <!DOCTYPE html>
     <html>
@@ -237,14 +319,14 @@ const generateHostNotificationHTML = (bookingData, userName, hostName, userEmail
             <p>Dear ${hostName},</p>
             <p>Great news! You have received a new booking for your property. Payment has been confirmed and the booking is now active.</p>
             
-            <div style="background-color: #fff3cd; border: 2px solid #FFC107; border-radius: 5px; padding: 15px; margin: 20px 0;">
+            ${totalServiceFees > 0 ? `<div style="background-color: #fff3cd; border: 2px solid #FFC107; border-radius: 5px; padding: 15px; margin: 20px 0;">
               <p style="margin: 0; font-weight: bold; color: #856404; font-size: 1.1em;">
-                ⚠️ Important: A service fee of ₦5,500 has been deducted from the total payment amount.
+                ⚠️ Important: A service fee of ₦${totalServiceFees.toLocaleString()} has been deducted from the total payment amount.
               </p>
               <p style="margin: 10px 0 0 0; color: #856404;">
-                This includes ₦2,500 cleaning fee and ₦3,000 service fee. The amount you receive is the total payment minus ₦5,500.
+                This includes ₦${cleaningFee.toLocaleString()} cleaning fee and ₦${serviceFee.toLocaleString()} service fee. The amount you receive is the total payment minus ₦${totalServiceFees.toLocaleString()}.
               </p>
-            </div>
+            </div>` : ''}
             
             <div class="user-info">
               <div class="user-section-title">👤 Guest Information:</div>
@@ -299,20 +381,20 @@ const generateHostNotificationHTML = (bookingData, userName, hostName, userEmail
                 <span class="label" style="color: #F57C00;">Service Fees (Taken by App):</span>
               </div>
               <div class="detail-row" style="padding-left: 20px;">
-                <span class="label">• Cleaning Fee:</span> <span style="color: #F57C00;">₦2,500</span>
+                <span class="label">• Cleaning Fee:</span> <span style="color: #F57C00;">₦${cleaningFee.toLocaleString()}</span>
               </div>
               <div class="detail-row" style="padding-left: 20px;">
-                <span class="label">• Service Fee:</span> <span style="color: #F57C00;">₦3,000</span>
+                <span class="label">• Service Fee:</span> <span style="color: #F57C00;">₦${serviceFee.toLocaleString()}</span>
               </div>
               <div class="detail-row" style="padding-left: 20px; border-top: 1px solid #FFE082;">
-                <span class="label"><strong>Total Service Fees:</strong></span> <span style="color: #F57C00; font-weight: bold;">₦5,500</span>
+                <span class="label"><strong>Total Service Fees:</strong></span> <span style="color: #F57C00; font-weight: bold;">₦${totalServiceFees.toLocaleString()}</span>
               </div>
               <div class="detail-row" style="border-top: 2px solid #FFC107; margin-top: 10px; padding-top: 10px;">
-                <span class="label" style="color: #F57C00; font-size: 1.1em;"><strong>Amount You Receive (Total - ₦5,500):</strong></span> <span style="color: #F57C00; font-size: 1.2em; font-weight: bold;">₦${Math.max(0, ((bookingData.totalAmount || 0) - 5500)).toLocaleString()}</span>
+                <span class="label" style="color: #F57C00; font-size: 1.1em;"><strong>Amount You Receive (Total - Fees):</strong></span> <span style="color: #F57C00; font-size: 1.2em; font-weight: bold;">₦${hostReceives.toLocaleString()}</span>
               </div>
-              <div class="detail-row" style="margin-top: 10px; padding-top: 10px; font-size: 0.9em; color: #856404; background-color: #fff3cd; padding: 10px; border-radius: 5px;">
-                <strong>📌 Service Fee Notice:</strong> A fixed service fee of ₦5,500 is always deducted from every booking payment. This consists of ₦2,500 cleaning fee and ₦3,000 service fee. Your payment is calculated as: Total Amount - ₦5,500 = Amount You Receive.
-              </div>
+              ${totalServiceFees > 0 ? `<div class="detail-row" style="margin-top: 10px; padding-top: 10px; font-size: 0.9em; color: #856404; background-color: #fff3cd; padding: 10px; border-radius: 5px;">
+                <strong>📌 Service Fee Notice:</strong> A service fee of ₦${totalServiceFees.toLocaleString()} is deducted from every booking payment. This consists of ₦${cleaningFee.toLocaleString()} cleaning fee and ₦${serviceFee.toLocaleString()} service fee. Your payment is calculated as: Total Amount - ₦${totalServiceFees.toLocaleString()} = Amount You Receive.
+              </div>` : ''}
             </div>
             
             <p><strong>Action Required:</strong> Please prepare your property and ensure everything is ready for your guest's arrival. You can contact the guest using the information provided above.</p>
@@ -324,6 +406,89 @@ const generateHostNotificationHTML = (bookingData, userName, hostName, userEmail
       </body>
     </html>
   `;
+};
+
+/**
+ * Send wallet top-up confirmation email to user
+ * @param {string} userEmail - User's email address
+ * @param {number} amount - Amount added to wallet
+ * @param {string} paymentMethod - Payment method used
+ * @param {string} paymentReference - Payment reference (optional)
+ * @param {number} newBalance - New wallet balance (optional)
+ * @param {string} userName - User's name (optional)
+ */
+export const sendWalletTopUpEmail = async (userEmail, amount, paymentMethod, paymentReference = null, newBalance = null, userName = 'Valued Customer') => {
+  if (!userEmail) {
+    console.warn('Cannot send email: No user email provided');
+    return false;
+  }
+
+  try {
+    // Get current balance if not provided
+    if (!newBalance) {
+      try {
+        const { getWalletBalance } = await import('../utils/wallet');
+        newBalance = await getWalletBalance(userEmail);
+      } catch (error) {
+        console.log('Could not get wallet balance for email:', error);
+      }
+    }
+
+    const receiptDetails = `
+Wallet Top-Up Confirmation:
+- Amount Added: ₦${amount.toLocaleString()}
+- Payment Method: ${paymentMethod || 'N/A'}
+${paymentReference ? `- Payment Reference: ${paymentReference}` : ''}
+${newBalance ? `- New Wallet Balance: ₦${newBalance.toLocaleString()}` : ''}
+- Transaction Date: ${new Date().toLocaleDateString()}
+`;
+
+    const subject = 'Wallet Top-Up Confirmed!';
+    const htmlContent = generateWalletTopUpHTML(amount, paymentMethod, paymentReference, newBalance || 0, userName);
+
+    // Try to use backend API first if available
+    try {
+      const { api } = await import('../services/api');
+      const { API_ENDPOINTS } = await import('../config/api');
+      
+      const emailPayload = {
+        to: userEmail,
+        subject: subject,
+        amount: amount,
+        paymentMethod: paymentMethod,
+        paymentReference: paymentReference,
+        newBalance: newBalance,
+        userName: userName,
+        emailType: 'wallet_topup',
+      };
+
+      const response = await api.post(API_ENDPOINTS.EMAIL.SEND_BOOKING_CONFIRMATION || '/api/email/send', emailPayload);
+      
+      if (response) {
+        console.log('✅ Wallet top-up email sent via backend API');
+        return true;
+      }
+    } catch (apiError) {
+      if (apiError?.status !== 500 && apiError?.status !== 401 && apiError?.status !== 403) {
+        console.error('❌ Backend API email endpoint error:', apiError?.message || 'Unknown error');
+      }
+    }
+
+    // Fallback to SendGrid if backend API is not available
+    console.log('📧 Backend API unavailable, attempting to send wallet top-up email via SendGrid...');
+    const sendGridSuccess = await sendEmailViaSendGrid(userEmail, subject, htmlContent, receiptDetails);
+    
+    if (sendGridSuccess) {
+      return true;
+    }
+
+    console.error('❌ Email sending failed - both backend API and SendGrid failed');
+    console.error('❌ User email that failed:', userEmail);
+    return false;
+  } catch (error) {
+    console.error('Error sending wallet top-up email:', error);
+    return false;
+  }
 };
 
 /**
@@ -339,30 +504,47 @@ const generateHostNotificationHTML = (bookingData, userName, hostName, userEmail
  * @param {number} bookingData.numberOfGuests - Number of guests
  * @param {string} bookingData.paymentMethod - Payment method used
  * @param {string} userName - User's name (optional)
+ * @param {number} topUpAmount - Amount added to wallet (optional, for booking payments)
+ * @param {number} newBalance - New wallet balance after top-up (optional)
  */
-export const sendUserBookingConfirmationEmail = async (userEmail, bookingData, userName = 'Valued Customer') => {
+export const sendUserBookingConfirmationEmail = async (userEmail, bookingData, userName = 'Valued Customer', topUpAmount = null, newBalance = null) => {
   if (!userEmail) {
     console.warn('Cannot send email: No user email provided');
     return false;
   }
 
   try {
-    // Format the receipt details
+    // Format the receipt details with complete information
     const receiptDetails = `
+BOOKING CONFIRMATION RECEIPT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 Booking Details:
 - Apartment: ${bookingData.title || 'N/A'}
 - Location: ${bookingData.location || 'N/A'}
-- Check-in: ${bookingData.checkInDate || 'N/A'}
-- Check-out: ${bookingData.checkOutDate || 'N/A'}
+- Check-in Date: ${bookingData.checkInDate || 'N/A'}
+- Check-out Date: ${bookingData.checkOutDate || 'N/A'}
 - Duration: ${bookingData.numberOfDays || 1} day(s)
-- Guests: ${bookingData.numberOfGuests || 1}
+- Number of Guests: ${bookingData.numberOfGuests || 1}
+- Booking Date: ${new Date(bookingData.bookingDate || Date.now()).toLocaleDateString()}
+
+Payment Information:
 - Payment Method: ${bookingData.paymentMethod || 'N/A'}
-- Total Amount: ₦${(bookingData.totalAmount || 0).toLocaleString()}
-- Booking Date: ${new Date().toLocaleDateString()}
+${bookingData.paymentReference || bookingData.txRef ? `- Payment Reference: ${bookingData.paymentReference || bookingData.txRef}` : ''}
+- Total Amount Paid: ₦${(bookingData.totalAmount || 0).toLocaleString()}
+- Transaction Status: ${bookingData.status || 'Confirmed'}
+
+${topUpAmount ? `Wallet Top-Up:
+- Amount Added to Wallet: ₦${topUpAmount.toLocaleString()}
+${newBalance ? `- New Wallet Balance: ₦${newBalance.toLocaleString()}` : ''}
+` : ''}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Thank you for your booking!
 `;
 
     const subject = 'Congratulations on Your Successful Booking!';
-    const htmlContent = generateBookingConfirmationHTML(bookingData, userName);
+    const htmlContent = generateBookingConfirmationHTML(bookingData, userName, topUpAmount, newBalance);
 
     // Try to use backend API first if available
     try {
@@ -444,8 +626,10 @@ export const sendHostBookingNotificationEmail = async (hostEmail, bookingData, u
   }
 
   try {
-    // Calculate fee breakdown - ALWAYS subtract ₦5,500 from total amount
-    const totalServiceFees = 5500; // Fixed service fee: ₦5,500 (Cleaning ₦2,500 + Service ₦3,000)
+    // Calculate fee breakdown - fees set to 0 until changed
+    const cleaningFee = 0; // Fixed cleaning fee: ₦0 (set to 0 until changed)
+    const serviceFee = 0; // Fixed service fee: ₦0 (set to 0 until changed)
+    const totalServiceFees = cleaningFee + serviceFee; // Total fees (currently 0)
     const hostReceives = Math.max(0, (bookingData.totalAmount || 0) - totalServiceFees);
 
     // Format the booking details
@@ -468,22 +652,20 @@ Booking Details:
 - Payment Method: ${bookingData.paymentMethod || 'N/A'}
 - Booking Date: ${new Date().toLocaleDateString()}
 
-⚠️ IMPORTANT: A service fee of ₦5,500 is always deducted from the total payment.
-
 PAYMENT BREAKDOWN:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Total Amount Paid by Guest: ₦${(bookingData.totalAmount || 0).toLocaleString()}
 
 Service Fees (Taken by App): ₦${totalServiceFees.toLocaleString()}
-  • Cleaning Fee: ₦2,500
-  • Service Fee: ₦3,000
-  • Total Service Fee: ₦5,500 (ALWAYS DEDUCTED)
+  • Cleaning Fee: ₦${cleaningFee.toLocaleString()}
+  • Service Fee: ₦${serviceFee.toLocaleString()}
+  • Total Service Fee: ₦${totalServiceFees.toLocaleString()}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AMOUNT YOU RECEIVE (Total - ₦5,500): ₦${hostReceives.toLocaleString()}
+AMOUNT YOU RECEIVE (Total - Fees): ₦${hostReceives.toLocaleString()}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Note: Your payment is always calculated as Total Amount - ₦5,500 = Amount You Receive.
+Note: Your payment is calculated as Total Amount - Service Fees = Amount You Receive.
 
 Please prepare your property and contact the guest using the information provided above.
 `;
@@ -555,6 +737,13 @@ export const sendBookingEmails = async (userEmail, userName, hostEmail, bookingD
     console.log('📧 User email:', userEmail);
     console.log('📧 Host email:', hostEmail);
     console.log('📧 User name:', userName);
+    console.log('📧 Booking ID:', bookingData?.id || 'N/A');
+    console.log('📧 Booking data:', {
+      title: bookingData?.title,
+      location: bookingData?.location,
+      checkInDate: bookingData?.checkInDate,
+      totalAmount: bookingData?.totalAmount,
+    });
 
     if (!userEmail) {
       console.error('❌ Cannot send emails: User email is missing');
@@ -564,10 +753,16 @@ export const sendBookingEmails = async (userEmail, userName, hostEmail, bookingD
     if (!hostEmail) {
       console.warn('⚠️ Host email is missing - will only send user confirmation');
     }
+    
+    if (!bookingData) {
+      console.error('❌ Cannot send emails: Booking data is missing');
+      return { userEmailSent: false, hostEmailSent: false };
+    }
 
     // Send emails in parallel
+    // Note: topUpAmount and newBalance can be passed if wallet was topped up during booking
     const [userEmailSent, hostEmailSent] = await Promise.allSettled([
-      sendUserBookingConfirmationEmail(userEmail, bookingData, userName),
+      sendUserBookingConfirmationEmail(userEmail, bookingData, userName, null, null),
       hostEmail ? sendHostBookingNotificationEmail(hostEmail, bookingData, userName, userEmail, userPhone, userAddress) : Promise.resolve(false),
     ]);
 
@@ -608,6 +803,412 @@ export const sendBookingEmails = async (userEmail, userName, hostEmail, bookingD
       userEmailSent: false,
       hostEmailSent: false,
     };
+  }
+};
+
+/**
+ * Generate HTML email template for payment request
+ */
+const generatePaymentRequestHTML = (bookingData, userName) => {
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background-color: #FF9800; color: #FFFFFF; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+          .content { background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; }
+          .details { background-color: white; padding: 15px; margin: 10px 0; border-radius: 5px; }
+          .detail-row { padding: 8px 0; border-bottom: 1px solid #eee; }
+          .detail-row:last-child { border-bottom: none; }
+          .label { font-weight: bold; color: #555; }
+          .amount { color: #FF9800; font-size: 1.2em; font-weight: bold; }
+          .action-button { background-color: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0; }
+          .footer { text-align: center; padding: 20px; color: #777; font-size: 0.9em; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>💰 Payment Request</h1>
+          </div>
+          <div class="content">
+            <p>Dear ${userName},</p>
+            <p>The host has requested payment for your booking. Please confirm the payment in the app to release the funds to the host.</p>
+            
+            <div class="details">
+              <div class="detail-row">
+                <span class="label">Apartment:</span> ${bookingData.title || 'N/A'}
+              </div>
+              <div class="detail-row">
+                <span class="label">Location:</span> ${bookingData.location || 'N/A'}
+              </div>
+              <div class="detail-row">
+                <span class="label">Check-in:</span> ${bookingData.checkInDate || 'N/A'}
+              </div>
+              <div class="detail-row">
+                <span class="label">Amount:</span> <span class="amount">₦${(bookingData.totalAmount || 0).toLocaleString()}</span>
+              </div>
+            </div>
+            
+            <p><strong>Action Required:</strong> Please open the app and confirm the payment to release the funds to the host.</p>
+          </div>
+          <div class="footer">
+            <p>This is an automated notification email. Please do not reply to this email.</p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+};
+
+/**
+ * Send payment request email to user
+ * @param {string} userEmail - User's email address
+ * @param {object} bookingData - Booking information
+ * @param {string} userName - User's name (optional)
+ */
+export const sendPaymentRequestEmail = async (userEmail, bookingData, userName = 'Valued Customer') => {
+  if (!userEmail) {
+    console.warn('Cannot send email: No user email provided');
+    return false;
+  }
+
+  try {
+    const receiptDetails = `
+Payment Request Details:
+- Apartment: ${bookingData.title || 'N/A'}
+- Location: ${bookingData.location || 'N/A'}
+- Check-in: ${bookingData.checkInDate || 'N/A'}
+- Amount: ₦${(bookingData.totalAmount || 0).toLocaleString()}
+- Action: Please confirm payment in the app
+`;
+
+    const subject = 'Payment Request - Action Required';
+    const htmlContent = generatePaymentRequestHTML(bookingData, userName);
+
+    // Try to use backend API first if available
+    try {
+      const { api } = await import('../services/api');
+      const { API_ENDPOINTS } = await import('../config/api');
+      
+      const emailPayload = {
+        to: userEmail,
+        subject: subject,
+        bookingData: bookingData,
+        receiptDetails: receiptDetails,
+        userName: userName,
+        emailType: 'payment_request',
+      };
+
+      const response = await api.post(API_ENDPOINTS.EMAIL.SEND_BOOKING_CONFIRMATION, emailPayload);
+      
+      if (response) {
+        console.log('✅ Payment request email sent via backend API');
+        return true;
+      }
+    } catch (apiError) {
+      if (apiError?.status !== 500 && apiError?.status !== 401 && apiError?.status !== 403) {
+        console.error('❌ Backend API email endpoint error:', apiError?.message || 'Unknown error');
+      }
+    }
+
+    // Fallback to SendGrid if backend API is not available
+    console.log('📧 Backend API unavailable, attempting to send payment request email via SendGrid...');
+    const sendGridSuccess = await sendEmailViaSendGrid(userEmail, subject, htmlContent, receiptDetails);
+    
+    if (sendGridSuccess) {
+      return true;
+    }
+
+    console.error('❌ Payment request email failed - both backend API and SendGrid failed');
+    return false;
+  } catch (error) {
+    console.error('Error sending payment request email:', error);
+    return false;
+  }
+};
+
+/**
+ * Generate HTML email template for payment confirmation
+ */
+const generatePaymentConfirmationHTML = (bookingData, hostName) => {
+  // Fees set to 0 until changed
+  const cleaningFee = 0; // Fixed cleaning fee: ₦0 (set to 0 until changed)
+  const serviceFee = 0; // Fixed service fee: ₦0 (set to 0 until changed)
+  const totalServiceFees = cleaningFee + serviceFee; // Total fees (currently 0)
+  const hostReceives = Math.max(0, (bookingData.totalAmount || 0) - totalServiceFees);
+  
+  return `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background-color: #4CAF50; color: #FFFFFF; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+          .content { background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; }
+          .details { background-color: white; padding: 15px; margin: 10px 0; border-radius: 5px; }
+          .detail-row { padding: 8px 0; border-bottom: 1px solid #eee; }
+          .detail-row:last-child { border-bottom: none; }
+          .label { font-weight: bold; color: #555; }
+          .amount { color: #4CAF50; font-size: 1.2em; font-weight: bold; }
+          .footer { text-align: center; padding: 20px; color: #777; font-size: 0.9em; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>✅ Payment Confirmed!</h1>
+          </div>
+          <div class="content">
+            <p>Dear ${hostName},</p>
+            <p>Great news! The guest has confirmed payment for your booking. The funds have been released to your wallet.</p>
+            
+            <div class="details">
+              <div class="detail-row">
+                <span class="label">Apartment:</span> ${bookingData.title || 'N/A'}
+              </div>
+              <div class="detail-row">
+                <span class="label">Location:</span> ${bookingData.location || 'N/A'}
+              </div>
+              <div class="detail-row">
+                <span class="label">Check-in:</span> ${bookingData.checkInDate || 'N/A'}
+              </div>
+              <div class="detail-row">
+                <span class="label">Amount Received:</span> <span class="amount">₦${hostReceives.toLocaleString()}</span>
+              </div>
+              <div class="detail-row">
+                <span class="label">Total Amount:</span> ₦${(bookingData.totalAmount || 0).toLocaleString()}
+              </div>
+              ${totalServiceFees > 0 ? `<div class="detail-row">
+                <span class="label">Service Fee:</span> -₦${totalServiceFees.toLocaleString()}
+              </div>` : ''}
+            </div>
+            
+            <p><strong>Next Steps:</strong> You can now withdraw the funds from your wallet to your bank account.</p>
+          </div>
+          <div class="footer">
+            <p>This is an automated notification email. Please do not reply to this email.</p>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+};
+
+/**
+ * Send booking cancellation email to host
+ * @param {string} hostEmail - Host's email address
+ * @param {object} bookingData - Booking information
+ * @param {string} guestName - Guest's name (optional)
+ * @param {string} reason - Reason for cancellation (optional)
+ */
+export const sendBookingCancellationEmail = async (hostEmail, bookingData, guestName = 'Guest', reason = 'Payment declined by guest') => {
+  if (!hostEmail) {
+    console.warn('Cannot send email: No host email provided');
+    return false;
+  }
+
+  try {
+    const bookingDetails = `
+BOOKING CANCELLED
+
+Guest Information:
+- Name: ${guestName}
+${bookingData.guestEmail ? `- Email: ${bookingData.guestEmail}` : ''}
+
+Booking Details:
+- Apartment: ${bookingData.title || 'N/A'}
+- Location: ${bookingData.location || 'N/A'}
+- Check-in Date: ${bookingData.checkInDate || 'N/A'}
+- Check-out Date: ${bookingData.checkOutDate || 'N/A'}
+- Duration: ${bookingData.numberOfDays || 1} day(s)
+- Number of Guests: ${bookingData.numberOfGuests || 1}
+- Total Amount: ₦${(bookingData.totalAmount || 0).toLocaleString()}
+
+Cancellation Reason:
+${reason}
+
+The guest has declined to confirm payment, and the booking has been cancelled. The payment held in escrow will be refunded to the guest.
+
+If you have any questions, please contact support.
+`;
+
+    const subject = 'Booking Cancelled - Payment Declined';
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background-color: #F44336; color: #FFFFFF; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }
+            .content { background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; }
+            .details { background-color: white; padding: 15px; margin: 10px 0; border-radius: 5px; }
+            .reason { background-color: #FFEBEE; padding: 15px; margin: 10px 0; border-left: 4px solid #F44336; }
+            .footer { text-align: center; padding: 20px; color: #777; font-size: 0.9em; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>⚠️ Booking Cancelled</h1>
+            </div>
+            <div class="content">
+              <p>Dear Host,</p>
+              <p>We regret to inform you that the booking for your property has been cancelled.</p>
+              
+              <div class="details">
+                <h3>Guest Information:</h3>
+                <p><strong>Name:</strong> ${guestName}</p>
+                ${bookingData.guestEmail ? `<p><strong>Email:</strong> ${bookingData.guestEmail}</p>` : ''}
+                
+                <h3>Booking Details:</h3>
+                <p><strong>Apartment:</strong> ${bookingData.title || 'N/A'}</p>
+                <p><strong>Location:</strong> ${bookingData.location || 'N/A'}</p>
+                <p><strong>Check-in:</strong> ${bookingData.checkInDate || 'N/A'}</p>
+                <p><strong>Check-out:</strong> ${bookingData.checkOutDate || 'N/A'}</p>
+                <p><strong>Total Amount:</strong> ₦${(bookingData.totalAmount || 0).toLocaleString()}</p>
+              </div>
+              
+              <div class="reason">
+                <h3>Cancellation Reason:</h3>
+                <p>${reason}</p>
+              </div>
+              
+              <p>The guest has declined to confirm payment, and the booking has been cancelled. The payment held in escrow will be refunded to the guest.</p>
+              
+              <p>If you have any questions, please contact support.</p>
+            </div>
+            <div class="footer">
+              <p>This is an automated notification email. Please do not reply to this email.</p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    // Try to use backend API first if available
+    try {
+      const { api } = await import('../services/api');
+      const { API_ENDPOINTS } = await import('../config/api');
+      
+      const emailPayload = {
+        to: hostEmail,
+        subject: subject,
+        bookingData: bookingData,
+        receiptDetails: bookingDetails,
+        guestName: guestName,
+        reason: reason,
+      };
+
+      const response = await api.post(API_ENDPOINTS.EMAIL.SEND_HOST_NOTIFICATION, emailPayload);
+      
+      if (response) {
+        console.log('✅ Booking cancellation email sent via backend API');
+        return true;
+      }
+    } catch (apiError) {
+      if (apiError?.status !== 500 && apiError?.status !== 401 && apiError?.status !== 403) {
+        console.error('❌ Backend API email endpoint error:', apiError?.message || 'Unknown error');
+      }
+    }
+
+    // Fallback to SendGrid if backend API is not available
+    console.log('📧 Backend API unavailable, attempting to send cancellation email via SendGrid...');
+    const sendGridSuccess = await sendEmailViaSendGrid(hostEmail, subject, htmlContent, bookingDetails);
+    
+    if (sendGridSuccess) {
+      return true;
+    }
+
+    console.error('❌ Cancellation email failed - both backend API and SendGrid failed');
+    return false;
+  } catch (error) {
+    console.error('Error sending booking cancellation email:', error);
+    return false;
+  }
+};
+
+/**
+ * Send payment confirmation email to host
+ * @param {string} hostEmail - Host's email address
+ * @param {object} bookingData - Booking information
+ * @param {string} guestName - Guest's name (optional)
+ */
+export const sendPaymentConfirmationEmail = async (hostEmail, bookingData, guestName = 'Guest') => {
+  if (!hostEmail) {
+    console.warn('Cannot send email: No host email provided');
+    return false;
+  }
+
+  try {
+    // Fees set to 0 until changed
+    const cleaningFee = 0; // Fixed cleaning fee: ₦0 (set to 0 until changed)
+    const serviceFee = 0; // Fixed service fee: ₦0 (set to 0 until changed)
+    const totalServiceFees = cleaningFee + serviceFee; // Total fees (currently 0)
+    const hostReceives = Math.max(0, (bookingData.totalAmount || 0) - totalServiceFees);
+    
+    const receiptDetails = `
+Payment Confirmation Details:
+- Apartment: ${bookingData.title || 'N/A'}
+- Location: ${bookingData.location || 'N/A'}
+- Check-in: ${bookingData.checkInDate || 'N/A'}
+- Guest: ${guestName}
+- Amount Received: ₦${hostReceives.toLocaleString()}
+- Total Amount: ₦${(bookingData.totalAmount || 0).toLocaleString()}
+${totalServiceFees > 0 ? `- Service Fee: -₦${totalServiceFees.toLocaleString()}` : ''}
+`;
+
+    const subject = 'Payment Confirmed - Funds Released to Your Wallet';
+    const hostName = bookingData.hostName || 'Property Owner';
+    const htmlContent = generatePaymentConfirmationHTML(bookingData, hostName);
+
+    // Try to use backend API first if available
+    try {
+      const { api } = await import('../services/api');
+      const { API_ENDPOINTS } = await import('../config/api');
+      
+      const emailPayload = {
+        to: hostEmail,
+        subject: subject,
+        bookingData: bookingData,
+        receiptDetails: receiptDetails,
+        guestName: guestName,
+        hostName: hostName,
+        emailType: 'payment_confirmation',
+      };
+
+      const response = await api.post(API_ENDPOINTS.EMAIL.SEND_HOST_NOTIFICATION, emailPayload);
+      
+      if (response) {
+        console.log('✅ Payment confirmation email sent via backend API');
+        return true;
+      }
+    } catch (apiError) {
+      if (apiError?.status !== 500 && apiError?.status !== 401 && apiError?.status !== 403) {
+        console.error('❌ Backend API email endpoint error:', apiError?.message || 'Unknown error');
+      }
+    }
+
+    // Fallback to SendGrid if backend API is not available
+    console.log('📧 Backend API unavailable, attempting to send payment confirmation email via SendGrid...');
+    const sendGridSuccess = await sendEmailViaSendGrid(hostEmail, subject, htmlContent, receiptDetails);
+    
+    if (sendGridSuccess) {
+      return true;
+    }
+
+    console.error('❌ Payment confirmation email failed - both backend API and SendGrid failed');
+    return false;
+  } catch (error) {
+    console.error('Error sending payment confirmation email:', error);
+    return false;
   }
 };
 

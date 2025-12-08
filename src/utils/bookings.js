@@ -147,6 +147,16 @@ export const addHostBooking = async (hostEmail, bookingData) => {
     // Normalize host email for consistent storage
     const normalizedHostEmail = hostEmail.toLowerCase().trim();
     const key = getUserStorageKey('hostBookings', normalizedHostEmail);
+    
+    console.log(`💾 Storing host booking for: ${normalizedHostEmail}`);
+    console.log(`💾 Booking data:`, {
+      id: bookingData.id,
+      title: bookingData.title,
+      guestEmail: bookingData.userEmail || bookingData.guestEmail,
+      guestName: bookingData.userName || bookingData.guestName,
+      totalAmount: bookingData.totalAmount
+    });
+    
     const bookingsJson = await AsyncStorage.getItem(key);
     const bookings = bookingsJson ? JSON.parse(bookingsJson) : [];
     
@@ -168,15 +178,124 @@ export const addHostBooking = async (hostEmail, bookingData) => {
       bookings.unshift(newBooking);
       await AsyncStorage.setItem(key, JSON.stringify(bookings));
       console.log(`✅ Host booking stored for ${normalizedHostEmail}: ${newBooking.title || 'Apartment'}`);
+      console.log(`✅ Total bookings for ${normalizedHostEmail}: ${bookings.length}`);
+      
+      // Verify it was stored correctly
+      const verifyJson = await AsyncStorage.getItem(key);
+      const verifyBookings = verifyJson ? JSON.parse(verifyJson) : [];
+      console.log(`✅ Verification: ${verifyBookings.length} bookings found in storage for ${normalizedHostEmail}`);
     } else {
       console.log(`⚠️ Host booking already exists for ${normalizedHostEmail}: ${newBooking.id}`);
+      // Update existing booking instead
+      bookings[existingIndex] = newBooking;
+      await AsyncStorage.setItem(key, JSON.stringify(bookings));
+      console.log(`✅ Updated existing host booking for ${normalizedHostEmail}`);
     }
     
     return newBooking;
   } catch (error) {
-    console.error('Error adding host booking:', error);
+    console.error('❌ Error adding host booking:', error);
+    console.error('❌ Error details:', error.message, error.stack);
     // Don't throw - host booking storage failure shouldn't block payment
     return null;
+  }
+};
+
+/**
+ * Sync host bookings from guest bookings
+ * This finds all guest bookings that have this host's email and creates host bookings from them
+ * @param {string} hostEmail - Host's email address
+ * @returns {Promise<Array>} Array of synced bookings
+ */
+const syncHostBookingsFromGuestBookings = async (hostEmail) => {
+  try {
+    if (!hostEmail) {
+      return [];
+    }
+    
+    const normalizedHostEmail = hostEmail.toLowerCase().trim();
+    console.log(`🔄 Syncing host bookings from guest bookings for: ${normalizedHostEmail}`);
+    
+    // Get all user bookings from AsyncStorage
+    // We need to check all user booking keys to find bookings for this host
+    const allKeys = await AsyncStorage.getAllKeys();
+    const userBookingKeys = allKeys.filter(key => key.startsWith('userBookings_'));
+    
+    console.log(`📋 Found ${userBookingKeys.length} user booking keys to check`);
+    
+    const syncedBookings = [];
+    
+    for (const key of userBookingKeys) {
+      try {
+        const bookingsJson = await AsyncStorage.getItem(key);
+        if (!bookingsJson) continue;
+        
+        const guestBookings = JSON.parse(bookingsJson);
+        if (!Array.isArray(guestBookings)) continue;
+        
+        // Find bookings where hostEmail matches
+        const matchingBookings = guestBookings.filter(booking => {
+          const bookingHostEmail = booking.hostEmail || booking.apartment?.hostEmail || booking.apartment?.createdBy;
+          if (!bookingHostEmail) return false;
+          
+          const normalizedBookingHostEmail = bookingHostEmail.toLowerCase().trim();
+          return normalizedBookingHostEmail === normalizedHostEmail;
+        });
+        
+        if (matchingBookings.length > 0) {
+          console.log(`✅ Found ${matchingBookings.length} guest bookings for host ${normalizedHostEmail} in key ${key}`);
+          
+          // Create host bookings from these guest bookings
+          for (const guestBooking of matchingBookings) {
+            // Check if host booking already exists (direct check to avoid circular dependency)
+            const hostBookingsKey = getUserStorageKey('hostBookings', normalizedHostEmail);
+            const existingHostBookingsJson = await AsyncStorage.getItem(hostBookingsKey);
+            const existingHostBookings = existingHostBookingsJson ? JSON.parse(existingHostBookingsJson) : [];
+            const alreadyExists = existingHostBookings.some(b => b.id === guestBooking.id);
+            
+            if (!alreadyExists) {
+              // Create host booking from guest booking
+              const hostBookingData = {
+                id: guestBooking.id,
+                apartmentId: guestBooking.apartmentId || guestBooking.apartment?.id,
+                title: guestBooking.title || guestBooking.apartment?.title || 'Apartment',
+                location: guestBooking.location || guestBooking.apartment?.location || 'Nigeria',
+                image: guestBooking.image || guestBooking.apartment?.image || guestBooking.apartment?.images?.[0],
+                checkInDate: guestBooking.checkInDate || guestBooking.checkIn,
+                checkOutDate: guestBooking.checkOutDate || guestBooking.checkOut,
+                numberOfDays: guestBooking.numberOfDays || 1,
+                numberOfGuests: guestBooking.numberOfGuests || guestBooking.guests || 1,
+                totalAmount: guestBooking.totalAmount || guestBooking.amount || guestBooking.price || 0,
+                paymentMethod: guestBooking.paymentMethod || guestBooking.payment?.method || 'Unknown',
+                status: guestBooking.status || 'Confirmed',
+                bookingDate: guestBooking.bookingDate || guestBooking.createdAt || new Date().toISOString(),
+                userEmail: guestBooking.userEmail, // Guest's email
+                userName: guestBooking.userName || 'Guest', // Guest's name
+                guestEmail: guestBooking.userEmail,
+                guestName: guestBooking.userName || 'Guest',
+                hostPaymentAmount: guestBooking.hostPaymentAmount || 0,
+              };
+              
+              await addHostBooking(normalizedHostEmail, hostBookingData);
+              syncedBookings.push(hostBookingData);
+              console.log(`✅ Synced host booking: ${hostBookingData.id} - ${hostBookingData.title}`);
+            }
+          }
+        }
+      } catch (keyError) {
+        console.error(`Error processing key ${key}:`, keyError);
+        continue;
+      }
+    }
+    
+    if (syncedBookings.length > 0) {
+      console.log(`✅ Synced ${syncedBookings.length} host bookings from guest bookings`);
+    }
+    
+    return syncedBookings;
+  } catch (error) {
+    console.error('❌ Error syncing host bookings:', error);
+    return [];
   }
 };
 
@@ -184,9 +303,10 @@ export const addHostBooking = async (hostEmail, bookingData) => {
  * Get all bookings for a specific host
  * PERSISTENCE: Host bookings persist across sign-out and sign-in
  * @param {string} hostEmail - Host's email address
+ * @param {boolean} syncFromGuestBookings - Whether to sync from guest bookings if no host bookings found
  * @returns {Promise<Array>} Array of bookings for the host
  */
-export const getHostBookings = async (hostEmail) => {
+export const getHostBookings = async (hostEmail, syncFromGuestBookings = true) => {
   try {
     if (!hostEmail) {
       console.warn('getHostBookings: No host email provided');
@@ -195,17 +315,50 @@ export const getHostBookings = async (hostEmail) => {
     // Normalize host email for consistent retrieval
     const normalizedHostEmail = hostEmail.toLowerCase().trim();
     const key = getUserStorageKey('hostBookings', normalizedHostEmail);
+    
+    console.log(`🔍 getHostBookings: Looking for bookings with key: ${key}`);
+    console.log(`🔍 getHostBookings: Normalized email: ${normalizedHostEmail}`);
+    
     const bookingsJson = await AsyncStorage.getItem(key);
     const bookings = bookingsJson ? JSON.parse(bookingsJson) : [];
     
+    console.log(`📋 getHostBookings: Found ${bookings.length} direct host bookings for ${normalizedHostEmail}`);
+    
+    // If no bookings found and sync is enabled, try to sync from guest bookings
+    if (bookings.length === 0 && syncFromGuestBookings) {
+      console.log('🔄 No direct host bookings found, attempting to sync from guest bookings...');
+      const syncedBookings = await syncHostBookingsFromGuestBookings(normalizedHostEmail);
+      
+      if (syncedBookings.length > 0) {
+        // Re-fetch after syncing
+        const updatedBookingsJson = await AsyncStorage.getItem(key);
+        const updatedBookings = updatedBookingsJson ? JSON.parse(updatedBookingsJson) : [];
+        bookings.push(...updatedBookings);
+        console.log(`✅ After sync: Found ${bookings.length} total host bookings`);
+      }
+    }
+    
     // Sort by date (most recent first)
-    return bookings.sort((a, b) => {
+    const sortedBookings = bookings.sort((a, b) => {
       const dateA = new Date(a.createdAt || a.bookingDate || 0);
       const dateB = new Date(b.createdAt || b.bookingDate || 0);
       return dateB - dateA;
     });
+    
+    // Log first booking for debugging
+    if (sortedBookings.length > 0) {
+      console.log(`📋 First booking:`, {
+        id: sortedBookings[0].id,
+        title: sortedBookings[0].title,
+        hostEmail: sortedBookings[0].hostEmail,
+        createdAt: sortedBookings[0].createdAt
+      });
+    }
+    
+    return sortedBookings;
   } catch (error) {
-    console.error('Error getting host bookings:', error);
+    console.error('❌ Error getting host bookings:', error);
+    console.error('❌ Error details:', error.message, error.stack);
     return [];
   }
 };
@@ -281,6 +434,19 @@ const datesOverlap = (checkIn1, checkOut1, checkIn2, checkOut2) => {
     const date2In = new Date(checkIn2);
     const date2Out = new Date(checkOut2);
     
+    // Validate dates are valid
+    if (isNaN(date1In.getTime()) || isNaN(date1Out.getTime()) || 
+        isNaN(date2In.getTime()) || isNaN(date2Out.getTime())) {
+      console.error('Invalid date format in datesOverlap');
+      return false;
+    }
+    
+    // Validate that check-in dates are before check-out dates
+    if (date1In >= date1Out || date2In >= date2Out) {
+      console.error('Invalid date range: check-in must be before check-out');
+      return false;
+    }
+    
     // Check for overlap: ranges overlap if one starts before the other ends and ends after the other starts
     return date1In <= date2Out && date1Out >= date2In;
   } catch (error) {
@@ -301,6 +467,20 @@ const datesOverlap = (checkIn1, checkOut1, checkIn2, checkOut2) => {
 export const checkDateConflict = async (apartmentId, hostEmail, checkInDate, checkOutDate, excludeBookingId = null) => {
   try {
     if (!apartmentId || !hostEmail || !checkInDate || !checkOutDate) {
+      return { hasConflict: false, conflictingBookings: [] };
+    }
+    
+    // Validate that check-in date is before check-out date
+    const checkIn = new Date(checkInDate);
+    const checkOut = new Date(checkOutDate);
+    
+    if (isNaN(checkIn.getTime()) || isNaN(checkOut.getTime())) {
+      console.error('Invalid date format in checkDateConflict');
+      return { hasConflict: false, conflictingBookings: [] };
+    }
+    
+    if (checkIn >= checkOut) {
+      console.error('Invalid date range: check-in date must be before check-out date');
       return { hasConflict: false, conflictingBookings: [] };
     }
     
@@ -359,6 +539,17 @@ export const getUnavailableDates = async (apartmentId, hostEmail) => {
       
       const checkInDate = new Date(checkIn);
       const checkOutDate = new Date(checkOut);
+      
+      // Validate dates are valid and check-in is before check-out
+      if (isNaN(checkInDate.getTime()) || isNaN(checkOutDate.getTime())) {
+        console.error('Invalid date format in getUnavailableDates:', checkIn, checkOut);
+        return;
+      }
+      
+      if (checkInDate >= checkOutDate) {
+        console.error('Invalid date range in booking: check-in must be before check-out', checkIn, checkOut);
+        return;
+      }
       
       // Iterate through each date from check-in to check-out (inclusive)
       const currentDate = new Date(checkInDate);
