@@ -21,5 +21,6 @@ EXPOSE 8080
 
 # Run the application
 # Railway will use this CMD, or you can override with startCommand
+# Trigger redeploy: wallet transaction fixes - 2025-01-08
 CMD ["java", "-jar", "booking-0.0.1-SNAPSHOT.jar", "--spring.profiles.active=staging"]
 
