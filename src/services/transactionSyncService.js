@@ -499,19 +499,37 @@ export const syncAllTransactionsFromBackend = async (userEmail) => {
     console.log(`✅ Calculated balance from transactions: ₦${calculatedBalance.toLocaleString()}`);
 
     // Step 6: Get API balance and compare
+    // Check balance FIRST to see if transactions exist but aren't being returned
     let apiBalance = 0;
     try {
+      console.log('🔄 Step 6: Fetching API balance to verify if transactions exist...');
       const balanceResult = await walletService.getBalance();
+      console.log('📦 Balance result:', balanceResult);
+      console.log('📦 Balance result type:', typeof balanceResult);
+      
       if (balanceResult !== null && balanceResult !== undefined) {
         if (typeof balanceResult === 'number') {
           apiBalance = balanceResult;
         } else if (typeof balanceResult === 'object') {
-          apiBalance = balanceResult.balance || balanceResult.amount || 0;
+          apiBalance = balanceResult.balance || balanceResult.amount || balanceResult.value || 0;
+          console.log('📦 Extracted balance from object:', apiBalance);
+        } else if (typeof balanceResult === 'string') {
+          apiBalance = parseFloat(balanceResult) || 0;
         }
         console.log(`✅ API balance: ₦${apiBalance.toLocaleString()}`);
+        
+        // If balance is non-zero but we have 0 transactions, this is a problem
+        if (apiBalance > 0 && apiTransactions.length === 0) {
+          console.error(`❌ CRITICAL: API balance is ₦${apiBalance.toLocaleString()} but 0 transactions returned!`);
+          console.error(`❌ This indicates transactions exist in Flutterwave but backend isn't returning them`);
+          console.error(`❌ Possible causes: 1) Backend not storing transactions, 2) Backend filtering them out, 3) Response format issue`);
+        }
+      } else {
+        console.warn('⚠️ API balance returned null/undefined');
       }
     } catch (balanceError) {
-      console.warn('⚠️ Error fetching API balance:', balanceError.message);
+      console.error('❌ Error fetching API balance:', balanceError.message);
+      console.error('❌ Balance error details:', balanceError);
     }
 
     // Step 7: Use API balance if available (it's more authoritative than calculated)

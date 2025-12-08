@@ -6,15 +6,45 @@ export const walletService = {
   // Get wallet balance
   getBalance: async () => {
     try {
+      console.log('🔄 Fetching wallet balance from backend...');
       const response = await api.get(API_ENDPOINTS.WALLET.BALANCE);
+      
       // If response is null (403, 401, etc.), return null for hybrid service to handle
       if (response === null || response === undefined) {
         console.warn('⚠️ Wallet balance API returned null - may indicate authentication or backend issues');
         return null;
       }
-      return response.data || response;
+      
+      // Log response for debugging
+      console.log('📦 Balance response type:', typeof response);
+      console.log('📦 Balance response:', response);
+      console.log('📦 Balance response keys:', response && typeof response === 'object' ? Object.keys(response) : 'N/A');
+      
+      // Handle different response formats
+      let balance = null;
+      if (typeof response === 'number') {
+        balance = response;
+        console.log(`✅ Balance (number): ₦${balance.toLocaleString()}`);
+      } else if (response && typeof response === 'object') {
+        balance = response.balance !== undefined ? response.balance : 
+                  response.amount !== undefined ? response.amount : 
+                  response.value !== undefined ? response.value : 
+                  response.data !== undefined ? response.data : null;
+        console.log(`✅ Balance (object): ₦${balance !== null ? balance.toLocaleString() : 'null'}`);
+      } else if (typeof response === 'string') {
+        balance = parseFloat(response);
+        console.log(`✅ Balance (string): ₦${balance.toLocaleString()}`);
+      }
+      
+      return balance !== null ? balance : (response.data || response);
     } catch (error) {
       // Log error but don't throw - allow graceful fallback
+      console.error('❌ Wallet balance API error:', {
+        message: error.message,
+        status: error.status,
+        isNetworkError: error.isNetworkError,
+        endpoint: API_ENDPOINTS.WALLET.BALANCE
+      });
       if (error.status !== 401 && error.status !== 403) {
         console.warn('⚠️ Wallet balance API error (non-fatal):', error.message || 'Unknown error');
       }
