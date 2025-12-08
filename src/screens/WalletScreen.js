@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -62,6 +62,9 @@ export default function WalletScreen() {
   const [flutterwaveUrl, setFlutterwaveUrl] = useState(null);
   const [verifyingPayment, setVerifyingPayment] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState(null); // 'pending', 'verifying', 'success', 'failed'
+  
+  // Track last comprehensive sync time
+  const lastComprehensiveSyncRef = useRef(0);
 
   const loadWalletData = useCallback(async () => {
     try {
@@ -281,7 +284,7 @@ export default function WalletScreen() {
         
         // Do comprehensive sync more frequently to ensure ALL transactions are fetched and verified in real-time
         // Every 30 seconds when payment pending, every 2 minutes otherwise
-        const timeSinceLastComprehensiveSync = Date.now() - (lastComprehensiveSync || 0);
+        const timeSinceLastComprehensiveSync = Date.now() - (lastComprehensiveSyncRef.current || 0);
         const comprehensiveSyncInterval = (paymentReference && paymentStatus !== 'success') ? 30000 : 120000; // 30s or 2min
         const shouldDoComprehensiveSync = timeSinceLastComprehensiveSync >= comprehensiveSyncInterval;
         
@@ -291,7 +294,7 @@ export default function WalletScreen() {
             if (user && user.email) {
               // Comprehensive sync fetches ALL transactions from Flutterwave and verifies pending ones
               await hybridWalletService.syncAllTransactions(user.email);
-              lastComprehensiveSync = Date.now();
+              lastComprehensiveSyncRef.current = Date.now();
               console.log('✅ Comprehensive sync completed - ALL transactions fetched and verified');
             }
           } catch (syncAllError) {
