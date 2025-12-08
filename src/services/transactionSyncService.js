@@ -124,14 +124,46 @@ export const mergeTransactions = (apiTransactions = [], localTransactions = []) 
   });
   
   // Convert map to array and sort by date (most recent first)
+  // Also ensure no duplicates by checking all reference fields
   const merged = Array.from(transactionMap.values());
-  merged.sort((a, b) => {
+  
+  // Final deduplication pass - remove any remaining duplicates
+  const finalMap = new Map();
+  merged.forEach(txn => {
+    // Try multiple keys for final deduplication
+    const keys = [
+      txn.id,
+      txn.reference,
+      txn.paymentReference,
+      txn.flutterwaveTxRef,
+      `${txn.type}_${txn.amount}_${txn.timestamp || txn.date || txn.createdAt}`
+    ].filter(Boolean);
+    
+    // Use first available unique key
+    let added = false;
+    for (const key of keys) {
+      if (!finalMap.has(key)) {
+        finalMap.set(key, txn);
+        added = true;
+        break;
+      }
+    }
+    
+    // If no key worked, use a combination
+    if (!added) {
+      const fallbackKey = `${txn.type}_${txn.amount}_${txn.timestamp || txn.date || txn.createdAt || Date.now()}_${Math.random()}`;
+      finalMap.set(fallbackKey, txn);
+    }
+  });
+  
+  const finalMerged = Array.from(finalMap.values());
+  finalMerged.sort((a, b) => {
     const dateA = new Date(a.timestamp || a.date || a.createdAt || 0);
     const dateB = new Date(b.timestamp || b.date || b.createdAt || 0);
     return dateB - dateA;
   });
   
-  return merged;
+  return finalMerged;
 };
 
 /**

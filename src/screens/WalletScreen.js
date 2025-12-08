@@ -52,6 +52,7 @@ export default function WalletScreen() {
   const [withdrawMethod, setWithdrawMethod] = useState('Bank Transfer');
   const [withdrawAccountDetails, setWithdrawAccountDetails] = useState('');
   const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   
   // Flutterwave wallet funding states
   const [paymentMethod, setPaymentMethod] = useState(null); // 'bank_transfer' or 'card'
@@ -110,10 +111,11 @@ export default function WalletScreen() {
       setBalance(validBalance);
       
       // Sort transactions by date (most recent first) - ensures all transactions are visible
-      // Also validate that all transactions have proper references
+      // Also validate that all transactions have proper references and remove duplicates
       const sortedTransactions = Array.isArray(walletTransactions) 
-        ? walletTransactions
-            .map(txn => {
+        ? (() => {
+            // First, ensure all transactions have proper references
+            const withReferences = walletTransactions.map(txn => {
               // Ensure transaction has proper reference for tracking
               if (!txn.reference && !txn.paymentReference && !txn.id) {
                 console.warn(`⚠️ Transaction missing reference:`, txn);
@@ -122,12 +124,43 @@ export default function WalletScreen() {
                 txn.paymentReference = txn.paymentReference || txn.reference;
               }
               return txn;
-            })
-            .sort((a, b) => {
+            });
+            
+            // Remove duplicates by checking all reference fields
+            const uniqueMap = new Map();
+            withReferences.forEach(txn => {
+              // Try multiple keys for deduplication
+              const keys = [
+                txn.id,
+                txn.reference,
+                txn.paymentReference,
+                txn.flutterwaveTxRef,
+                `${txn.type}_${txn.amount}_${txn.timestamp || txn.date || txn.createdAt}`
+              ].filter(Boolean);
+              
+              // Use first available unique key
+              let added = false;
+              for (const key of keys) {
+                if (!uniqueMap.has(key)) {
+                  uniqueMap.set(key, txn);
+                  added = true;
+                  break;
+                }
+              }
+              
+              // If all keys are duplicates, skip this transaction
+              if (!added) {
+                console.warn(`⚠️ Skipping duplicate transaction:`, txn);
+              }
+            });
+            
+            // Convert back to array and sort
+            return Array.from(uniqueMap.values()).sort((a, b) => {
               const dateA = new Date(a.timestamp || a.date || a.createdAt || 0);
               const dateB = new Date(b.timestamp || b.date || b.createdAt || 0);
               return dateB - dateA; // Most recent first
-            })
+            });
+          })()
         : [];
       
       console.log(`✅ Loaded ${sortedTransactions.length} transactions for wallet display`);
@@ -452,6 +485,46 @@ export default function WalletScreen() {
 
     try {
       setLoading(true);
+      setSyncing(true);
+      
+      // First, try to verify specific known transaction patterns
+      // This handles cases where transactions exist in Flutterwave but weren't fetched by email
+      const normalizedEmail = user.email.toLowerCase().trim();
+      const emailPattern = normalizedEmail.replace(/[^a-z0-9]/g, '_');
+      
+      // Get local transactions to extract potential txRefs
+      const localTransactions = await getTransactions(normalizedEmail);
+      const txRefsToVerify = new Set();
+      
+      // Extract potential Flutterwave txRefs from local transactions
+      localTransactions.forEach(txn => {
+        // Look for Flutterwave transaction references
+        if (txn.flutterwaveTxRef && !txn.flutterwaveTxRef.startsWith('txn_')) {
+          txRefsToVerify.add(txn.flutterwaveTxRef);
+        }
+        if (txn.reference && !txn.reference.startsWith('txn_') && (txn.reference.includes('@') || txn.reference.includes('wallet_topup') || txn.reference.includes('listing'))) {
+          txRefsToVerify.add(txn.reference);
+        }
+        if (txn.paymentReference && !txn.paymentReference.startsWith('txn_') && (txn.paymentReference.includes('@') || txn.paymentReference.includes('wallet_topup') || txn.paymentReference.includes('listing'))) {
+          txRefsToVerify.add(txn.paymentReference);
+        }
+      });
+      
+      // Try to verify these transactions directly
+      if (txRefsToVerify.size > 0) {
+        console.log(`🔄 Attempting to verify ${txRefsToVerify.size} transactions directly by txRef...`);
+        try {
+          const verifyResult = await walletService.verifyMultipleTransactions(Array.from(txRefsToVerify));
+          if (verifyResult && verifyResult.processed > 0) {
+            console.log(`✅ Verified ${verifyResult.processed} transactions directly by txRef`);
+            // Wait a bit for backend to process
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        } catch (verifyError) {
+          console.warn('⚠️ Error verifying transactions by txRef (non-fatal):', verifyError.message);
+        }
+      }
+      
       Alert.alert(
         'Syncing Transactions',
         'Please wait while we sync all your transactions from Flutterwave. This may take a few moments...',
@@ -485,6 +558,7 @@ export default function WalletScreen() {
       );
     } finally {
       setLoading(false);
+      setSyncing(false);
     }
   }, [user]);
 
@@ -1565,8 +1639,8 @@ export default function WalletScreen() {
               </Text>
             </View>
           ) : (
-            transactions.map((transaction) => (
-              <View key={transaction.id} style={styles.transactionCard}>
+            transactions.map((transaction, index) => (
+              <View key={transaction.id || transaction.reference || transaction.paymentReference || transaction.flutterwaveTxRef || `txn_${index}`} style={styles.transactionCard}>
                 <View style={styles.transactionIconContainer}>
                   <MaterialIcons
                     name={
