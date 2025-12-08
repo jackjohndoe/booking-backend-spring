@@ -232,6 +232,50 @@ export const syncAllTransactionsFromBackend = async (userEmail) => {
       console.warn('⚠️ Backend sync-all failed (non-fatal):', syncError.message);
       // Continue anyway - we'll try to fetch transactions
     }
+    
+    // Step 1.5: Try to verify any transactions that might exist but weren't fetched
+    // This handles cases where transactions exist in Flutterwave but email-based fetching returned 0
+    console.log('🔄 Step 1.5: Attempting to verify transactions that might exist in Flutterwave...');
+    try {
+      // Get local transactions to extract potential txRefs to verify
+      const localTransactions = await getTransactions(normalizedEmail);
+      const txRefsToVerify = new Set();
+      
+      // Extract potential txRefs from local transactions
+      localTransactions.forEach(txn => {
+        if (txn.flutterwaveTxRef && !txn.flutterwaveTxRef.startsWith('txn_')) {
+          txRefsToVerify.add(txn.flutterwaveTxRef);
+        }
+        if (txn.reference && !txn.reference.startsWith('txn_') && txn.reference.includes('@')) {
+          txRefsToVerify.add(txn.reference);
+        }
+        if (txn.paymentReference && !txn.paymentReference.startsWith('txn_') && txn.paymentReference.includes('@')) {
+          txRefsToVerify.add(txn.paymentReference);
+        }
+      });
+      
+      // Also try common patterns based on user email
+      const emailPattern = normalizedEmail.replace(/[^a-z0-9]/g, '_');
+      // Pattern: wallet_topup_{email}_{timestamp}
+      // Pattern: {email}_{timestamp}_listing_{listingId}_{random}
+      // We can't generate exact timestamps, but we can try verifying if there are any references
+      
+      if (txRefsToVerify.size > 0) {
+        console.log(`🔄 Found ${txRefsToVerify.size} potential transaction references to verify...`);
+        try {
+          const verifyResult = await walletService.verifyMultipleTransactions(Array.from(txRefsToVerify));
+          if (verifyResult && verifyResult.processed > 0) {
+            console.log(`✅ Verified ${verifyResult.processed} transactions directly by txRef`);
+            // Wait a bit for backend to process verified transactions
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        } catch (verifyError) {
+          console.warn('⚠️ Error verifying transactions by txRef (non-fatal):', verifyError.message);
+        }
+      }
+    } catch (verifyError) {
+      console.warn('⚠️ Error in transaction verification step (non-fatal):', verifyError.message);
+    }
 
     // Step 2: Fetch all transactions from backend (with retry)
     console.log('🔄 Step 2: Fetching ALL transactions from backend...');
