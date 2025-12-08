@@ -104,10 +104,27 @@ export default function WalletScreen() {
         hybridWalletService.getTransactions(normalizedEmail),
       ]);
       
-      // Ensure balance is a valid number (handle NaN)
-      const validBalance = (walletBalance !== null && walletBalance !== undefined && !isNaN(parseFloat(walletBalance))) 
+      // Recalculate balance from valid transactions only (excludes Welcome Bonus)
+      // This ensures balance is always accurate based on actual Flutterwave transactions
+      const { calculateBalanceFromTransactions } = await import('../services/transactionSyncService');
+      const calculatedBalance = calculateBalanceFromTransactions(walletTransactions);
+      
+      // ALWAYS use calculated balance from valid transactions (excludes Welcome Bonus)
+      // This ensures balance reflects only actual Flutterwave transactions
+      const validBalance = Math.floor(calculatedBalance);
+      
+      // Update stored balance if it differs from calculated
+      const currentStoredBalance = walletBalance !== null && walletBalance !== undefined && !isNaN(parseFloat(walletBalance)) 
         ? parseFloat(walletBalance) 
         : 0;
+      
+      if (Math.abs(currentStoredBalance - validBalance) > 0.01) {
+        console.log(`🔄 Updating wallet balance to match valid transactions: ₦${currentStoredBalance.toLocaleString()} → ₦${validBalance.toLocaleString()}`);
+        console.log(`📊 Valid transactions: ${walletTransactions.length}, Calculated balance: ₦${validBalance.toLocaleString()}`);
+        const { updateWalletBalance } = await import('../utils/wallet');
+        await updateWalletBalance(normalizedEmail, validBalance);
+      }
+      
       setBalance(validBalance);
       
       // Sort transactions by date (most recent first) - ensures all transactions are visible

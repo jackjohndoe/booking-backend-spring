@@ -383,25 +383,31 @@ export const getTransactions = async (userEmail) => {
       const removedCount = transactions.length - userTransactions.length;
       console.log(`🗑️ Permanently removed ${removedCount} invalid/Welcome Bonus transactions from storage`);
       await AsyncStorage.setItem(key, JSON.stringify(userTransactions));
-      
-      // Recalculate balance after removing Welcome Bonus transactions
-      const currentBalance = await getWalletBalance(normalizedEmail);
-      const calculatedBalance = userTransactions.reduce((total, txn) => {
-        const amount = parseFloat(txn.amount || 0);
-        const type = (txn.type || '').toLowerCase();
-        if (type === 'deposit' || type === 'top_up' || type === 'transfer_in') {
-          return total + amount;
-        } else if (type === 'withdrawal' || type === 'payment' || type === 'transfer_out') {
-          return total - amount;
-        }
-        return total;
-      }, 0);
-      
-      // Update balance if it changed
-      if (Math.abs(currentBalance - calculatedBalance) > 0.01) {
-        console.log(`🔄 Updating balance after removing Welcome Bonus: ₦${currentBalance.toLocaleString()} → ₦${Math.floor(calculatedBalance).toLocaleString()}`);
-        await updateWalletBalance(normalizedEmail, Math.floor(calculatedBalance));
+    }
+    
+    // ALWAYS recalculate balance from valid transactions to ensure accuracy
+    // This fixes any balance issues from Welcome Bonus transactions
+    const calculatedBalance = userTransactions.reduce((total, txn) => {
+      const amount = parseFloat(txn.amount || 0);
+      const type = (txn.type || '').toLowerCase();
+      if (type === 'deposit' || type === 'top_up' || type === 'transfer_in') {
+        return total + amount;
+      } else if (type === 'withdrawal' || type === 'payment' || type === 'transfer_out') {
+        return total - amount;
       }
+      return total;
+    }, 0);
+    
+    // Get current stored balance
+    const currentBalance = await getWalletBalance(normalizedEmail);
+    
+    // Update balance to match calculated balance from valid transactions
+    // If no valid transactions, balance should be 0
+    const finalBalance = Math.floor(calculatedBalance);
+    if (Math.abs(currentBalance - finalBalance) > 0.01) {
+      console.log(`🔄 Recalculating balance from valid transactions: ₦${currentBalance.toLocaleString()} → ₦${finalBalance.toLocaleString()}`);
+      console.log(`📊 Valid transactions: ${userTransactions.length}, Calculated balance: ₦${finalBalance.toLocaleString()}`);
+      await updateWalletBalance(normalizedEmail, finalBalance);
     }
     
     // Return ONLY this user's transactions
