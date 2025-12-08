@@ -112,10 +112,17 @@ export default function WalletScreen() {
       
       // Sort transactions by date (most recent first) - ensures all transactions are visible
       // Also validate that all transactions have proper references and remove duplicates
+      // Filter out Welcome Bonus Voucher transactions
       const sortedTransactions = Array.isArray(walletTransactions) 
         ? (() => {
-            // First, ensure all transactions have proper references
-            const withReferences = walletTransactions.map(txn => {
+            // First, filter out Welcome Bonus Voucher transactions
+            const filteredTransactions = walletTransactions.filter(txn => {
+              const description = (txn.description || '').toLowerCase();
+              return !description.includes('welcome bonus') && !description.includes('welcome bonus voucher');
+            });
+            
+            // Then, ensure all transactions have proper references
+            const withReferences = filteredTransactions.map(txn => {
               // Ensure transaction has proper reference for tracking
               if (!txn.reference && !txn.paymentReference && !txn.id) {
                 console.warn(`⚠️ Transaction missing reference:`, txn);
@@ -1639,8 +1646,20 @@ export default function WalletScreen() {
               </Text>
             </View>
           ) : (
-            transactions.map((transaction, index) => (
-              <View key={transaction.id || transaction.reference || transaction.paymentReference || transaction.flutterwaveTxRef || `txn_${index}`} style={styles.transactionCard}>
+            transactions.map((transaction, index) => {
+              // Generate a truly unique key using multiple fields + index to prevent duplicates
+              const uniqueKey = transaction.id 
+                ? `${transaction.id}_${index}` 
+                : transaction.reference 
+                ? `${transaction.reference}_${index}` 
+                : transaction.paymentReference 
+                ? `${transaction.paymentReference}_${index}` 
+                : transaction.flutterwaveTxRef 
+                ? `${transaction.flutterwaveTxRef}_${index}` 
+                : `txn_${transaction.type}_${transaction.amount}_${transaction.timestamp || transaction.date || index}_${index}`;
+              
+              return (
+                <View key={uniqueKey} style={styles.transactionCard}>
                 <View style={styles.transactionIconContainer}>
                   <MaterialIcons
                     name={
@@ -1720,7 +1739,8 @@ export default function WalletScreen() {
                   {formatPrice(transaction.amount)}
                 </Text>
               </View>
-            ))
+              );
+            })
           )}
         </View>
       </ScrollView>

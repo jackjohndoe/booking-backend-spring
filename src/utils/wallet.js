@@ -336,7 +336,15 @@ export const getTransactions = async (userEmail) => {
     
     // CRITICAL: Filter transactions to ensure ONLY this user's transactions are returned
     // This prevents any cross-user data leakage
+    // Also filter out Welcome Bonus Voucher transactions
     const userTransactions = transactions.filter(txn => {
+      // Filter out Welcome Bonus Voucher transactions
+      const description = (txn.description || '').toLowerCase();
+      if (description.includes('welcome bonus') || description.includes('welcome bonus voucher')) {
+        console.log(`ℹ️ Filtering out Welcome Bonus Voucher transaction: ${txn.id || txn.reference || 'unknown'}`);
+        return false;
+      }
+      
       // If transaction has userEmail, verify it matches exactly
       if (txn.userEmail) {
         const txnEmail = txn.userEmail.toLowerCase().trim();

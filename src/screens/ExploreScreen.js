@@ -175,33 +175,14 @@ export default function ExploreScreen() {
     if (!user || !user.email) return;
     
     try {
-      // SET wallet balance to exactly ₦50,000 (not add to existing)
-      const { updateWalletBalance, addTransaction } = await import('../utils/wallet');
-      
-      // Set balance to exactly ₦50,000
-      await updateWalletBalance(user.email, 50000);
-      
-      // Add transaction record for the welcome bonus
-      await addTransaction(user.email, {
-        type: 'deposit',
-        amount: 50000,
-        description: 'Welcome Bonus Voucher',
-        status: 'completed',
-      });
-      
-      // Verify the balance was set correctly
-      const { getWalletBalance } = await import('../utils/wallet');
-      const verifiedBalance = await getWalletBalance(user.email);
-      console.log(`✅ Welcome bonus claimed: User ${user.email} wallet set to ₦${verifiedBalance.toLocaleString()}`);
-      
-      // Mark deal as claimed
+      // Mark deal as claimed (no wallet funding)
       await markWelcomeDealSeen(user.email, true);
       
       setShowWelcomeDeal(false);
       
       Alert.alert(
-        'Congratulations!',
-        '₦50,000 has been added to your wallet! Start booking your dream apartment now.',
+        'Welcome!',
+        'Thanks for joining! Start exploring and booking your dream apartment now.',
         [{ text: 'OK' }]
       );
     } catch (error) {
