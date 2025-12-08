@@ -752,8 +752,9 @@ export const hybridWalletService = {
         console.warn('⚠️ Error fetching API balance (non-fatal):', apiError.message);
       }
       
-      // If API balance is 0 or null, calculate from transactions
-      if (apiBalance === 0) {
+      // If API balance is 0 or null, try calculating from transactions
+      // But prefer API balance if it's non-zero (even if transactions aren't returned)
+      if (apiBalance === 0 || apiBalance === null) {
         try {
           const { getTransactions } = await import('../utils/wallet');
           const { calculateBalanceFromTransactions } = await import('../services/transactionSyncService');
@@ -767,6 +768,10 @@ export const hybridWalletService = {
         } catch (calcError) {
           console.warn('⚠️ Error calculating balance from transactions:', calcError.message);
         }
+      } else {
+        // API balance is non-zero - use it even if we don't have transactions
+        // This handles cases where transactions exist but aren't being returned
+        console.log(`✅ Using API balance: ₦${apiBalance.toLocaleString()} (transactions may not be returned yet)`);
       }
       
       // Fallback to local balance if API balance is still 0

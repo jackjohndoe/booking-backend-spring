@@ -59,13 +59,49 @@ export const walletService = {
   // Get transactions
   getTransactions: async () => {
     try {
+      console.log('🔄 Fetching transactions from backend API...');
       const response = await api.get(API_ENDPOINTS.WALLET.TRANSACTIONS);
+      
       // If response is null (403, 401, etc.), return null for hybrid service to handle
       if (response === null || response === undefined) {
+        console.warn('⚠️ Backend transactions API returned null');
         return null;
       }
-      return response.data || response;
+      
+      // Log the response structure for debugging
+      console.log('📦 Backend transactions response type:', typeof response);
+      console.log('📦 Backend transactions response keys:', response && typeof response === 'object' ? Object.keys(response) : 'N/A');
+      
+      // Handle different response formats
+      let transactions = null;
+      if (Array.isArray(response)) {
+        transactions = response;
+        console.log(`✅ Backend returned array with ${transactions.length} transactions`);
+      } else if (response && typeof response === 'object') {
+        transactions = response.data || response.transactions || response.items || [];
+        console.log(`✅ Backend returned object, extracted ${transactions.length} transactions`);
+      } else {
+        console.warn('⚠️ Unexpected response format from backend:', response);
+        return null;
+      }
+      
+      // Log transaction details for debugging
+      if (transactions && transactions.length > 0) {
+        console.log('📋 Sample transaction:', JSON.stringify(transactions[0], null, 2));
+        console.log(`📋 Transaction types: ${transactions.map(t => t.type || 'unknown').join(', ')}`);
+        console.log(`📋 Transaction references: ${transactions.slice(0, 3).map(t => t.reference || t.flutterwaveTxRef || t.id || 'N/A').join(', ')}`);
+      } else {
+        console.warn('⚠️ Backend returned empty transactions array');
+      }
+      
+      return transactions;
     } catch (error) {
+      console.error('❌ Error getting transactions from backend:', {
+        message: error.message,
+        status: error.status,
+        isNetworkError: error.isNetworkError,
+        endpoint: API_ENDPOINTS.WALLET.TRANSACTIONS
+      });
       // Return null instead of throwing to allow graceful fallback
       return null;
     }

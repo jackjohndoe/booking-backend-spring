@@ -358,12 +358,31 @@ export const syncAllTransactionsFromBackend = async (userEmail) => {
     const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        console.log(`🔄 Attempt ${attempt}/${maxRetries}: Calling walletService.getTransactions()...`);
         const transactionsResult = await walletService.getTransactions();
+        
         if (transactionsResult !== null && transactionsResult !== undefined) {
-          apiTransactions = Array.isArray(transactionsResult) 
-            ? transactionsResult 
-            : (transactionsResult.data || []);
+          // Handle different response formats
+          if (Array.isArray(transactionsResult)) {
+            apiTransactions = transactionsResult;
+          } else if (transactionsResult && typeof transactionsResult === 'object') {
+            apiTransactions = transactionsResult.data || transactionsResult.transactions || transactionsResult.items || [];
+          } else {
+            apiTransactions = [];
+          }
+          
           console.log(`✅ Fetched ${apiTransactions.length} transactions from backend (attempt ${attempt}/${maxRetries})`);
+          
+          // Log details about fetched transactions
+          if (apiTransactions.length > 0) {
+            console.log(`📋 Transaction types: ${apiTransactions.map(t => t.type || 'unknown').join(', ')}`);
+            console.log(`📋 Transaction statuses: ${apiTransactions.map(t => t.status || 'unknown').join(', ')}`);
+            console.log(`📋 Has Flutterwave refs: ${apiTransactions.filter(t => t.flutterwaveTxRef || t.reference).length}/${apiTransactions.length}`);
+          } else {
+            console.warn(`⚠️ Backend returned empty transactions array (attempt ${attempt}/${maxRetries})`);
+            console.warn(`⚠️ This could mean: 1) No transactions exist in backend, 2) Backend filtering issue, 3) Response format mismatch`);
+          }
+          
           break; // Success, exit retry loop
         } else {
           console.warn(`⚠️ Backend returned null for transactions (attempt ${attempt}/${maxRetries})`);
@@ -372,7 +391,11 @@ export const syncAllTransactionsFromBackend = async (userEmail) => {
           }
         }
       } catch (fetchError) {
-        console.error(`❌ Error fetching transactions from backend (attempt ${attempt}/${maxRetries}):`, fetchError.message);
+        console.error(`❌ Error fetching transactions from backend (attempt ${attempt}/${maxRetries}):`, {
+          message: fetchError.message,
+          status: fetchError.status,
+          stack: fetchError.stack
+        });
         if (attempt < maxRetries) {
           await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
         } else {
@@ -383,6 +406,80 @@ export const syncAllTransactionsFromBackend = async (userEmail) => {
     
     if (apiTransactions.length === 0) {
       console.warn('⚠️ No transactions fetched from backend - will use local transactions only');
+      
+      // If API balance is non-zero but we have 0 transactions, try to verify transactions directly
+      // This handles cases where transactions exist in Flutterwave but weren't fetched by email
+      try {
+        const balanceResult = await walletService.getBalance();
+        let apiBalance = 0;
+        if (balanceResult !== null && balanceResult !== undefined) {
+          if (typeof balanceResult === 'number') {
+            apiBalance = balanceResult;
+          } else if (typeof balanceResult === 'object') {
+            apiBalance = balanceResult.balance || balanceResult.amount || 0;
+          }
+        }
+        
+        if (apiBalance > 0) {
+          console.log(`⚠️ API balance is ₦${apiBalance.toLocaleString()} but 0 transactions returned - transactions may exist but weren't fetched`);
+          console.log('🔄 Attempting to verify transactions by common patterns...');
+          
+          // Try to verify transactions using common Flutterwave txRef patterns
+          const emailPattern = normalizedEmail.replace(/[^a-z0-9]/g, '_');
+          
+          // Common patterns:
+          // 1. wallet_topup_{email}_{timestamp}
+          // 2. {email}_{timestamp}_listing_{listingId}_{random}
+          // We'll try to verify recent transactions by checking if they exist
+          
+          // Get local transactions that might have Flutterwave references
+          const localTransactions = await getTransactions(normalizedEmail);
+          const txRefsToVerify = new Set();
+          
+          // Extract txRefs from local transactions
+          localTransactions.forEach(txn => {
+            if (txn.flutterwaveTxRef && !txn.flutterwaveTxRef.startsWith('txn_')) {
+              txRefsToVerify.add(txn.flutterwaveTxRef);
+            }
+            if (txn.reference && !txn.reference.startsWith('txn_') && (txn.reference.includes('@') || txn.reference.includes('wallet_topup'))) {
+              txRefsToVerify.add(txn.reference);
+            }
+            if (txn.paymentReference && !txn.paymentReference.startsWith('txn_') && (txn.paymentReference.includes('@') || txn.paymentReference.includes('wallet_topup'))) {
+              txRefsToVerify.add(txn.paymentReference);
+            }
+          });
+          
+          // If we have txRefs to verify, try verifying them
+          if (txRefsToVerify.size > 0) {
+            console.log(`🔄 Found ${txRefsToVerify.size} potential transaction references to verify directly...`);
+            try {
+              const verifyResult = await walletService.verifyMultipleTransactions(Array.from(txRefsToVerify));
+              if (verifyResult && verifyResult.processed > 0) {
+                console.log(`✅ Verified ${verifyResult.processed} transactions directly by txRef`);
+                // Wait for backend to process
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Refetch transactions after verification
+                const retryTransactionsResult = await walletService.getTransactions();
+                if (retryTransactionsResult !== null && retryTransactionsResult !== undefined) {
+                  if (Array.isArray(retryTransactionsResult)) {
+                    apiTransactions = retryTransactionsResult;
+                  } else if (retryTransactionsResult && typeof retryTransactionsResult === 'object') {
+                    apiTransactions = retryTransactionsResult.data || retryTransactionsResult.transactions || retryTransactionsResult.items || [];
+                  }
+                  console.log(`✅ After verification, fetched ${apiTransactions.length} transactions from backend`);
+                }
+              }
+            } catch (verifyError) {
+              console.warn('⚠️ Error verifying transactions by txRef (non-fatal):', verifyError.message);
+            }
+          } else {
+            console.warn('⚠️ No local transaction references found to verify - transactions may need to be created from Flutterwave');
+          }
+        }
+      } catch (balanceCheckError) {
+        console.warn('⚠️ Error checking API balance (non-fatal):', balanceCheckError.message);
+      }
     }
 
     // Step 3: Sync API transactions to local storage
@@ -417,13 +514,27 @@ export const syncAllTransactionsFromBackend = async (userEmail) => {
       console.warn('⚠️ Error fetching API balance:', balanceError.message);
     }
 
-    // Step 7: Use the higher balance (API or calculated) and update local if needed
-    const finalBalance = Math.max(apiBalance, calculatedBalance);
-    if (finalBalance > 0) {
+    // Step 7: Use API balance if available (it's more authoritative than calculated)
+    // If API balance is non-zero but we have 0 transactions, the balance is still valid
+    // This handles cases where transactions exist in Flutterwave but aren't being returned
+    let finalBalance = apiBalance > 0 ? apiBalance : calculatedBalance;
+    
+    // If API balance is non-zero but we have no transactions, log a warning
+    if (apiBalance > 0 && mergedTransactions.length === 0) {
+      console.warn(`⚠️ API balance is ₦${apiBalance.toLocaleString()} but 0 transactions returned`);
+      console.warn(`⚠️ This suggests transactions exist in Flutterwave but aren't being fetched/returned by backend`);
+      console.warn(`⚠️ Using API balance as source of truth: ₦${apiBalance.toLocaleString()}`);
+      
+      // Still use API balance - it's the authoritative source
+      finalBalance = apiBalance;
+    }
+    
+    // Update local balance to match final balance
+    if (finalBalance > 0 || (finalBalance === 0 && apiBalance === 0 && calculatedBalance === 0)) {
       const currentLocalBalance = await getWalletBalance(normalizedEmail);
-      if (currentLocalBalance !== finalBalance) {
-        console.log(`🔄 Updating local balance: ${currentLocalBalance} → ${finalBalance}`);
-        await updateWalletBalance(normalizedEmail, finalBalance);
+      if (Math.abs(currentLocalBalance - finalBalance) > 0.01) {
+        console.log(`🔄 Updating local balance: ₦${currentLocalBalance.toLocaleString()} → ₦${finalBalance.toLocaleString()}`);
+        await updateWalletBalance(normalizedEmail, Math.floor(finalBalance));
       }
     }
 
