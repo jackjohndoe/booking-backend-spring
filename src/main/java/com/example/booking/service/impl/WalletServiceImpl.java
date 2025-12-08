@@ -845,7 +845,7 @@ public class WalletServiceImpl implements WalletService {
                 existingTransaction.setStatus(Transaction.Status.COMPLETED);
                 // Update with Flutterwave transaction references from verification response
                 // The verification response contains the actual Flutterwave txRef (which might differ from local reference)
-                String flutterwaveTxRef = verification.getTxRef();
+                // flutterwaveTxRef is already declared earlier in the method
                 if (flutterwaveTxRef != null && !flutterwaveTxRef.isEmpty()) {
                     existingTransaction.setFlutterwaveTxRef(flutterwaveTxRef);
                     // Also update reference field if it was a local reference
