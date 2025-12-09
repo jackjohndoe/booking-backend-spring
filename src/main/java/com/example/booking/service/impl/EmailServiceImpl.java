@@ -28,18 +28,19 @@ public class EmailServiceImpl implements EmailService {
             @Value("${sendgrid.from-email:noreply@myapp.com}") String fromEmail,
             @Value("${sendgrid.from-name:MyApp}") String fromName,
             @Value("${app.reset-password.url:myapp://reset-password}") String resetPasswordUrl) {
+        // Initialize SendGrid using temporary variable to avoid multiple assignments to final field
+        SendGrid tempSendGrid = null;
         try {
             if (apiKey == null || apiKey.trim().isEmpty()) {
                 log.warn("⚠️ SendGrid API key is not configured. Email sending will fail.");
-                this.sendGrid = null;
             } else {
-                this.sendGrid = new SendGrid(apiKey.trim());
+                tempSendGrid = new SendGrid(apiKey.trim());
                 log.info("✅ SendGrid initialized successfully");
             }
         } catch (Exception e) {
             log.error("❌ Failed to initialize SendGrid: {}", e.getMessage(), e);
-            this.sendGrid = null;
         }
+        this.sendGrid = tempSendGrid;
         
         // Initialize email configuration (these are safe to set regardless of SendGrid initialization)
         this.fromEmail = fromEmail != null ? fromEmail.trim() : "noreply@myapp.com";
