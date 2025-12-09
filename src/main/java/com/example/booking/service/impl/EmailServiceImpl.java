@@ -36,17 +36,16 @@ public class EmailServiceImpl implements EmailService {
                 this.sendGrid = new SendGrid(apiKey.trim());
                 log.info("✅ SendGrid initialized successfully");
             }
-            this.fromEmail = fromEmail != null ? fromEmail.trim() : "noreply@myapp.com";
-            this.fromName = fromName != null ? fromName.trim() : "MyApp";
-            this.resetPasswordUrl = resetPasswordUrl != null ? resetPasswordUrl.trim() : "myapp://reset-password";
-            log.info("📧 EmailServiceImpl initialized - From: {} <{}>, Reset URL: {}", this.fromName, this.fromEmail, this.resetPasswordUrl);
         } catch (Exception e) {
-            log.error("❌ Failed to initialize EmailServiceImpl: {}", e.getMessage(), e);
+            log.error("❌ Failed to initialize SendGrid: {}", e.getMessage(), e);
             this.sendGrid = null;
-            this.fromEmail = fromEmail != null ? fromEmail.trim() : "noreply@myapp.com";
-            this.fromName = fromName != null ? fromName.trim() : "MyApp";
-            this.resetPasswordUrl = resetPasswordUrl != null ? resetPasswordUrl.trim() : "myapp://reset-password";
         }
+        
+        // Initialize email configuration (these are safe to set regardless of SendGrid initialization)
+        this.fromEmail = fromEmail != null ? fromEmail.trim() : "noreply@myapp.com";
+        this.fromName = fromName != null ? fromName.trim() : "MyApp";
+        this.resetPasswordUrl = resetPasswordUrl != null ? resetPasswordUrl.trim() : "myapp://reset-password";
+        log.info("📧 EmailServiceImpl initialized - From: {} <{}>, Reset URL: {}", this.fromName, this.fromEmail, this.resetPasswordUrl);
     }
 
     @Override
