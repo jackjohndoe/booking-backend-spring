@@ -59,7 +59,7 @@ public class ApartmentController {
             @AuthenticationPrincipal BookingUserDetails userDetails) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(PageResponse.from(
-                listingService.getAllListings(filter, pageable, userDetails != null ? userDetails.getUser() : null)
+                listingService.getAllListings(filter, pageable, since, userDetails != null ? userDetails.getUser() : null)
         ));
     }
 
@@ -145,7 +145,7 @@ public class ApartmentController {
         
         // Get all listings and filter by current user (host)
         Pageable pageable = Pageable.unpaged();
-        var allListings = listingService.getAllListings(null, pageable, userDetails.getUser());
+        var allListings = listingService.getAllListings(null, pageable, null, userDetails.getUser());
         
         // Filter to only include listings owned by the current user
         Long currentUserId = userDetails.getUser().getId();
@@ -179,7 +179,7 @@ public class ApartmentController {
         );
         
         Pageable pageable = PageRequest.of(page, size);
-        var result = listingService.getAllListings(filter, pageable, userDetails != null ? userDetails.getUser() : null);
+        var result = listingService.getAllListings(filter, pageable, null, userDetails != null ? userDetails.getUser() : null);
         
         // If query is provided, filter results by title/description containing query
         if (query != null && !query.trim().isEmpty()) {

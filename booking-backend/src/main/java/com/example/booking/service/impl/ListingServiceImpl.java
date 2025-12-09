@@ -131,7 +131,7 @@ public class ListingServiceImpl implements ListingService {
     }
 
     @Override
-    public Page<ListingResponse> getAllListings(ListingFilterRequest filter, Pageable pageable, User currentUser) {
+    public Page<ListingResponse> getAllListings(ListingFilterRequest filter, Pageable pageable, Long since, User currentUser) {
         ListingFilterRequest criteria = filter == null ? new ListingFilterRequest(null, null, null, null, null, null) : filter;
         validateDateRange(criteria.startDate(), criteria.endDate());
         validatePriceRange(criteria.minPrice(), criteria.maxPrice());
@@ -144,7 +144,7 @@ public class ListingServiceImpl implements ListingService {
                 amenities,
                 criteria.startDate(),
                 criteria.endDate(),
-                null // since parameter removed - can be added back via filter request if needed
+                since
         );
 
         final Set<Long> favoriteIds;

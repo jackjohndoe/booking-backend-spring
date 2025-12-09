@@ -129,7 +129,7 @@ public class ListingController {
             @AuthenticationPrincipal BookingUserDetails userDetails) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(PageResponse.from(
-                listingService.getAllListings(filter, pageable, userDetails != null ? userDetails.getUser() : null)
+                listingService.getAllListings(filter, pageable, null, userDetails != null ? userDetails.getUser() : null)
         ));
     }
 
