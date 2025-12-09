@@ -143,7 +143,8 @@ public class ListingServiceImpl implements ListingService {
                 criteria.maxPrice(),
                 amenities,
                 criteria.startDate(),
-                criteria.endDate()
+                criteria.endDate(),
+                null // since parameter removed - can be added back via filter request if needed
         );
 
         final Set<Long> favoriteIds;
