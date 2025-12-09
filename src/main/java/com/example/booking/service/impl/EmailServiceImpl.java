@@ -6,10 +6,8 @@ import com.sendgrid.Request;
 import com.sendgrid.Response;
 import com.sendgrid.SendGrid;
 import com.sendgrid.helpers.mail.Mail;
-import com.sendgrid.helpers.mail.MailSettings;
 import com.sendgrid.helpers.mail.objects.Content;
 import com.sendgrid.helpers.mail.objects.Email;
-import com.sendgrid.helpers.mail.objects.Setting;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -81,13 +79,6 @@ public class EmailServiceImpl implements EmailService {
 
             Content content = new Content("text/html", htmlContent);
             Mail mail = new Mail(from, subject, to, content);
-
-            // Disable click tracking for security (tokens shouldn't be tracked)
-            MailSettings mailSettings = new MailSettings();
-            Setting clickTracking = new Setting();
-            clickTracking.setEnable(false);
-            mailSettings.setClickTracking(clickTracking);
-            mail.setMailSettings(mailSettings);
 
             Request request = new Request();
             request.setMethod(Method.POST);
