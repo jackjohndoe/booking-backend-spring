@@ -130,7 +130,44 @@ export const authService = {
       // Save authenticated user to local storage
       await AsyncStorage.setItem('user', JSON.stringify(userToStore));
       
+      // Store credentials securely for automatic re-authentication when tokens expire (403 errors)
+      // This allows the app to automatically re-authenticate without requiring user to sign out/in
+      try {
+        const { storeCredentials } = await import('../utils/secureStorage');
+        await storeCredentials(normalizedEmail, password);
+        console.log('✅ Credentials stored securely for auto re-authentication');
+        
+        // Verify credentials were stored successfully
+        const { hasStoredCredentials } = await import('../utils/secureStorage');
+        const credentialsStored = await hasStoredCredentials();
+        if (credentialsStored) {
+          console.log('✅ Auto re-authentication is now ENABLED - 403 errors will be handled automatically');
+        } else {
+          console.warn('⚠️ Credentials storage verification failed - auto re-authentication may not work');
+        }
+      } catch (storageError) {
+        // Non-fatal - log but don't fail login
+        // Secure storage might not be available on some platforms (e.g., web)
+        console.warn('⚠️ Could not store credentials securely (non-fatal):', storageError.message);
+      }
+      
       console.log('✅ Backend authentication successful:', normalizedEmail);
+      
+      // Trigger sync of pending listings after successful login
+      // This ensures listings queued while logged out get synced immediately
+      try {
+        const { syncPendingListings, resetSyncRetryDelays } = await import('./listingSyncService');
+        // Reset retry delays first to allow immediate sync
+        await resetSyncRetryDelays();
+        // Use forceRetry=true to bypass retry delays and sync immediately
+        syncPendingListings(true).catch(syncError => {
+          console.warn('⚠️ Could not sync pending listings after login (non-fatal):', syncError.message);
+        });
+      } catch (importError) {
+        // Non-fatal - sync service might not be available
+        console.warn('⚠️ Could not import sync service (non-fatal):', importError.message);
+      }
+      
       return { ...response, user: userToStore };
     } catch (error) {
       // Return error message for proper handling
@@ -163,12 +200,13 @@ export const authService = {
       
       // Send registration data to backend - this creates and saves the account on backend
       // Include default role since backend requires it but frontend doesn't have role field
-      // Backend allows: Guest, Host, Admin - everyone signing up is a Guest
+      // Backend allows: GUEST, HOST, ADMIN - default to HOST so users can create listings
+      // Users with HOST role can both create listings AND book other listings
       const response = await api.post(API_ENDPOINTS.AUTH.REGISTER, {
         name: normalizedName,
         email: normalizedEmail,
         password: userData.password,
-        role: userData.role || 'Guest', // Default role is Guest for all new sign-ups
+        role: userData.role || 'HOST', // Default role is HOST so users can create listings
       });
       
       // If response is null or undefined, registration failed
@@ -308,6 +346,16 @@ export const authService = {
         // Continue anyway - we'll try to clear user state
       }
       
+      // Clear securely stored credentials on logout
+      try {
+        const { clearStoredCredentials } = await import('../utils/secureStorage');
+        await clearStoredCredentials();
+        console.log('✅ Cleared stored credentials');
+      } catch (clearError) {
+        // Non-fatal - log but don't fail logout
+        console.warn('⚠️ Could not clear stored credentials:', clearError.message);
+      }
+      
       // Note: We don't clear other data like favorites, bookings, etc.
       // as they may be associated with the backend account
       
@@ -323,6 +371,15 @@ export const authService = {
       } catch (storageError) {
         console.error('Error clearing AsyncStorage (fallback):', storageError);
       }
+      
+      // Clear securely stored credentials on logout (fallback)
+      try {
+        const { clearStoredCredentials } = await import('../utils/secureStorage');
+        await clearStoredCredentials();
+      } catch (clearError) {
+        console.warn('⚠️ Could not clear stored credentials (fallback):', clearError.message);
+      }
+      
       // Return success anyway - local logout should always succeed
       return { success: true };
     }
