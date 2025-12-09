@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 
 @SpringBootApplication
 @EnableConfigurationProperties(StorageProperties.class)
+@org.springframework.scheduling.annotation.EnableScheduling
 public class BookingApplication {
 
     public static void main(String[] args) {

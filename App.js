@@ -1,52 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import { View, ActivityIndicator, AppState } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
-
-// Suppress expo-notifications warnings/errors in Expo Go (these are expected and harmless)
-if (__DEV__) {
-  const originalWarn = console.warn;
-  const originalError = console.error;
-  
-  // Suppress warnings about expo-notifications in Expo Go
-  console.warn = (...args) => {
-    const message = args[0]?.toString() || '';
-    // These warnings are expected - push notifications require a development build
-    // The app works fine without them, using in-app notifications instead
-    if (
-      message.includes('expo-notifications') ||
-      message.includes('Android Push notifications') ||
-      message.includes('functionality provided by expo-notifications was removed') ||
-      message.includes('development build') ||
-      message.includes('Use a development build instead of Expo Go') ||
-      message.includes('expo-notifications functionality is not fully supported') ||
-      message.includes('We recommend you instead use a development build') ||
-      message.includes('expo.fyi/dev')
-    ) {
-      // Silently ignore these expected warnings
-      return;
-    }
-    originalWarn.apply(console, args);
-  };
-  
-  // Suppress errors about expo-notifications in Expo Go
-  console.error = (...args) => {
-    const message = args[0]?.toString() || '';
-    if (
-      message.includes('expo-notifications') &&
-      (message.includes('Android Push notifications') ||
-       message.includes('was removed from Expo Go') ||
-       message.includes('development build') ||
-       message.includes('We recommend you instead use a development build') ||
-       message.includes('expo.fyi/dev'))
-    ) {
-      // Silently ignore these expected errors
-      return;
-    }
-    originalError.apply(console, args);
-  };
-}
-
 // Notifications are optional - may not work in Expo Go
 let Notifications = null;
 try {
@@ -58,7 +13,10 @@ import { AuthProvider } from './src/context/AuthContext';
 import { useAuth } from './src/hooks/useAuth';
 import SignInScreen from './src/screens/SignInScreen';
 import SignUpScreen from './src/screens/SignUpScreen';
+import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
+import ResetPasswordScreen from './src/screens/ResetPasswordScreen';
 import MainTabNavigator from './src/navigation/MainTabNavigator';
+import { initializeSync } from './src/services/listingSyncService';
 
 const Stack = createStackNavigator();
 
@@ -68,6 +26,44 @@ function AppContent() {
   const notificationListener = useRef();
   const responseListener = useRef();
   const navigationRef = React.useRef();
+  const syncServiceRef = useRef(null);
+  const appStateRef = useRef(AppState.currentState);
+
+  // Initialize listing sync service
+  useEffect(() => {
+    console.log('🔄 Initializing listing sync service...');
+    try {
+      syncServiceRef.current = initializeSync();
+      console.log('✅ Listing sync service initialized');
+    } catch (error) {
+      console.error('❌ Error initializing sync service:', error);
+    }
+
+    // Handle app state changes (foreground/background)
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (
+        appStateRef.current.match(/inactive|background/) &&
+        nextAppState === 'active'
+      ) {
+        // App has come to the foreground - sync pending listings
+        console.log('🔄 App came to foreground, syncing pending listings...');
+        if (syncServiceRef.current && syncServiceRef.current.sync) {
+          syncServiceRef.current.sync().catch(error => {
+            console.error('Error syncing on foreground:', error);
+          });
+        }
+      }
+      appStateRef.current = nextAppState;
+    });
+
+    return () => {
+      // Cleanup: stop periodic sync
+      if (syncServiceRef.current && syncServiceRef.current.stop) {
+        syncServiceRef.current.stop();
+      }
+      subscription?.remove();
+    };
+  }, []);
 
   useEffect(() => {
     // Set up notification handlers - optional (may not work in Expo Go)
@@ -176,6 +172,8 @@ function AppContent() {
           <>
             <Stack.Screen name="SignIn" component={SignInScreen} />
             <Stack.Screen name="SignUp" component={SignUpScreen} />
+            <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+            <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
           </>
         ) : (
           <Stack.Screen name="Main" component={MainTabNavigator} />

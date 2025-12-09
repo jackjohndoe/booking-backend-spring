@@ -15,6 +15,9 @@ export const API_ENDPOINTS = {
     REGISTER: '/api/auth/register',
     PROFILE: '/api/auth/profile',
     ME: '/api/auth/me',
+    FORGOT_PASSWORD: '/api/auth/forgot-password',
+    RESET_PASSWORD: '/api/auth/reset-password',
+    VALIDATE_RESET_TOKEN: '/api/auth/validate-reset-token',
   },
   // Apartments
   APARTMENTS: {
@@ -65,6 +68,14 @@ export const API_ENDPOINTS = {
     CREATE_VIRTUAL_ACCOUNT: '/api/payments/flutterwave/create-virtual-account',
     INITIALIZE_PAYMENT: '/api/payments/flutterwave/initialize',
     VERIFY_PAYMENT: '/api/payments/flutterwave/verify',
+  },
+  // Escrow
+  ESCROW: {
+    CREATE: '/api/escrow/create',
+    STATUS: (escrowId) => `/api/escrow/${escrowId}/status`,
+    RELEASE: (escrowId) => `/api/escrow/${escrowId}/release`,
+    CANCEL: (escrowId) => `/api/escrow/${escrowId}/cancel`,
+    BY_BOOKING: (bookingId) => `/api/escrow/booking/${bookingId}`,
   },
 };
 

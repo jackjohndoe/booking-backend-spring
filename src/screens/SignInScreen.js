@@ -349,6 +349,13 @@ export default function SignInScreen() {
           )}
 
           <TouchableOpacity
+            style={styles.forgotPasswordLink}
+            onPress={() => navigation.navigate('ForgotPassword')}
+          >
+            <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             style={[styles.signInButton, loading && styles.signInButtonDisabled]}
             onPress={handleEmailSignIn}
             activeOpacity={0.8}
@@ -543,6 +550,16 @@ const styles = StyleSheet.create({
   },
   signInButtonDisabled: {
     opacity: 0.6,
+  },
+  forgotPasswordLink: {
+    alignSelf: 'flex-end',
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  forgotPasswordText: {
+    color: '#FFD700',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

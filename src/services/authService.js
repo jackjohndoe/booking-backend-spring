@@ -327,5 +327,67 @@ export const authService = {
       return { success: true };
     }
   },
+
+  // Request password reset
+  requestPasswordReset: async (email) => {
+    try {
+      if (!email || !email.trim()) {
+        throw new Error('Email is required');
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(normalizedEmail)) {
+        throw new Error('Please enter a valid email address');
+      }
+
+      const response = await api.post(API_ENDPOINTS.AUTH.FORGOT_PASSWORD, {
+        email: normalizedEmail,
+      });
+
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  // Validate reset token
+  validateResetToken: async (token) => {
+    try {
+      if (!token || !token.trim()) {
+        throw new Error('Reset token is required');
+      }
+
+      const response = await api.get(API_ENDPOINTS.AUTH.VALIDATE_RESET_TOKEN, {
+        params: { token },
+      });
+
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  },
+
+  // Reset password
+  resetPassword: async (token, newPassword) => {
+    try {
+      if (!token || !token.trim()) {
+        throw new Error('Reset token is required');
+      }
+
+      if (!newPassword || newPassword.length < 8) {
+        throw new Error('Password must be at least 8 characters long');
+      }
+
+      const response = await api.post(API_ENDPOINTS.AUTH.RESET_PASSWORD, {
+        token: token.trim(),
+        newPassword,
+      });
+
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  },
 };
 
