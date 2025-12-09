@@ -7,7 +7,10 @@ import jakarta.persistence.criteria.Subquery;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Set;
 
 public final class ListingSpecifications {
@@ -20,7 +23,8 @@ public final class ListingSpecifications {
                                                      BigDecimal maxPrice,
                                                      Set<Amenity> amenities,
                                                      LocalDate startDate,
-                                                     LocalDate endDate) {
+                                                     LocalDate endDate,
+                                                     Long since) {
         Specification<Listing> spec = Specification.where(null);
 
         if (location != null && !location.isBlank()) {
@@ -79,6 +83,14 @@ public final class ListingSpecifications {
                 );
                 return cb.not(cb.exists(subquery));
             });
+        }
+
+        // Filter by createdAt timestamp if since parameter is provided (for real-time updates)
+        if (since != null && since > 0) {
+            OffsetDateTime sinceDateTime = OffsetDateTime.ofInstant(Instant.ofEpochMilli(since), ZoneOffset.UTC);
+            spec = spec.and((root, query, cb) ->
+                    cb.greaterThanOrEqualTo(root.get("createdAt"), sinceDateTime)
+            );
         }
 
         return spec;
