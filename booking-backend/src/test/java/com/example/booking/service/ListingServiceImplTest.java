@@ -206,7 +206,7 @@ class ListingServiceImplTest {
         when(favoriteRepository.findListingIdsByUserId(host.getId())).thenReturn(Set.of(listing.getId()));
 
         ListingFilterRequest filter = new ListingFilterRequest(null, null, null, null, null, null);
-        Page<ListingResponse> result = listingService.getAllListings(filter, PageRequest.of(0, 5), host);
+        Page<ListingResponse> result = listingService.getAllListings(filter, PageRequest.of(0, 5), null, host);
 
         assertThat(result.getContent()).hasSize(1);
         assertThat(result.getContent().get(0).getAmenities()).containsExactly("WIFI");
@@ -219,7 +219,7 @@ class ListingServiceImplTest {
     void getAllListings_invalidDateRange() {
         ListingFilterRequest filter = new ListingFilterRequest(null, null, null, java.time.LocalDate.now().plusDays(5), java.time.LocalDate.now(), null);
 
-        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5), host))
+        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5), null, host))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("End date must be after start date");
     }
@@ -229,7 +229,7 @@ class ListingServiceImplTest {
     void getAllListings_invalidPriceRange() {
         ListingFilterRequest filter = new ListingFilterRequest(null, BigDecimal.TEN, BigDecimal.ONE, null, null, null);
 
-        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5), host))
+        assertThatThrownBy(() -> listingService.getAllListings(filter, PageRequest.of(0, 5), null, host))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("Max price must be greater");
     }
