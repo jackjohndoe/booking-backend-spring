@@ -55,10 +55,11 @@ public class ApartmentController {
             @Parameter(description = "Filter criteria") @ModelAttribute ListingFilterRequest filter,
             @Parameter(description = "Page number (0-indexed)") @RequestParam(name = "page", defaultValue = "0") int page,
             @Parameter(description = "Page size") @RequestParam(name = "size", defaultValue = "10") int size,
+            @Parameter(description = "Fetch listings created after this timestamp (milliseconds since epoch). Used for real-time updates.") @RequestParam(name = "since", required = false) Long since,
             @AuthenticationPrincipal BookingUserDetails userDetails) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(PageResponse.from(
-                listingService.getAllListings(filter, pageable, userDetails != null ? userDetails.getUser() : null)
+                listingService.getAllListings(filter, pageable, since, userDetails != null ? userDetails.getUser() : null)
         ));
     }
 
@@ -75,19 +76,21 @@ public class ApartmentController {
         return ResponseEntity.ok(listingService.getListing(id, userDetails != null ? userDetails.getUser() : null));
     }
 
-    @Operation(summary = "Create a new apartment", description = "Creates a new property apartment listing. Requires HOST or ADMIN role.")
+    @Operation(summary = "Create a new apartment", description = "Creates a new property apartment listing. Requires authentication (any role can create listings).")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "200", description = "Apartment created successfully",
                     content = @Content(schema = @Schema(implementation = ListingResponse.class))),
             @ApiResponse(responseCode = "400", description = "Invalid input"),
-            @ApiResponse(responseCode = "403", description = "Forbidden - HOST or ADMIN role required")
+            @ApiResponse(responseCode = "401", description = "Unauthorized - authentication required")
     })
     @SecurityRequirement(name = "bearerAuth")
-    @PreAuthorize("hasRole('HOST') or hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<ListingResponse> createApartment(
             @Valid @RequestBody ListingRequest request,
             @AuthenticationPrincipal BookingUserDetails userDetails) {
+        if (userDetails == null || userDetails.getUser() == null) {
+            return ResponseEntity.status(401).build();
+        }
         return ResponseEntity.ok(listingService.createListing(request, userDetails.getUser()));
     }
 

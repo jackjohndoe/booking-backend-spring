@@ -40,18 +40,20 @@ public class ListingController {
         this.listingService = listingService;
     }
 
-    @Operation(summary = "Create a new listing", description = "Creates a new property listing. Requires HOST or ADMIN role.")
+    @Operation(summary = "Create a new listing", description = "Creates a new property listing. Requires authentication (any role can create listings).")
     @ApiResponses(value = {
             @ApiResponse(responseCode = "200", description = "Listing created successfully",
                     content = @Content(schema = @Schema(implementation = ListingResponse.class))),
             @ApiResponse(responseCode = "400", description = "Invalid input"),
-            @ApiResponse(responseCode = "403", description = "Forbidden - HOST or ADMIN role required")
+            @ApiResponse(responseCode = "401", description = "Unauthorized - authentication required")
     })
     @SecurityRequirement(name = "bearerAuth")
-    @PreAuthorize("hasRole('HOST') or hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<ListingResponse> createListing(@Valid @RequestBody ListingRequest request,
                                                          @AuthenticationPrincipal BookingUserDetails userDetails) {
+        if (userDetails == null || userDetails.getUser() == null) {
+            return ResponseEntity.status(401).build();
+        }
         return ResponseEntity.ok(listingService.createListing(request, userDetails.getUser()));
     }
 
@@ -127,7 +129,7 @@ public class ListingController {
             @AuthenticationPrincipal BookingUserDetails userDetails) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(PageResponse.from(
-                listingService.getAllListings(filter, pageable, userDetails != null ? userDetails.getUser() : null)
+                listingService.getAllListings(filter, pageable, null, userDetails != null ? userDetails.getUser() : null)
         ));
     }
 
