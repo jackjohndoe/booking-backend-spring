@@ -25,6 +25,7 @@ import org.springframework.http.HttpMethod;
 
 import java.io.IOException;
 import java.time.OffsetDateTime;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -48,6 +49,7 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
+                .cors(cors -> cors.configurationSource(corsConfigurationSource())) // Enable CORS
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/auth/**", "/api/health/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/listings/*/reviews/**").permitAll()
@@ -65,6 +67,49 @@ public class SecurityConfig {
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    /**
+     * CORS configuration source for Spring Security
+     * This ensures CORS is properly handled by Spring Security filter chain
+     */
+    @Bean
+    public org.springframework.web.cors.CorsConfigurationSource corsConfigurationSource() {
+        org.springframework.web.cors.CorsConfiguration configuration = new org.springframework.web.cors.CorsConfiguration();
+        
+        // Allow common development origins
+        configuration.setAllowedOrigins(Arrays.asList(
+            "http://localhost:8081",      // Expo web default
+            "http://localhost:19006",      // Expo web alternative
+            "http://localhost:3000",       // Common dev port
+            "http://127.0.0.1:8081",      // Localhost alternative
+            "http://127.0.0.1:19006",     // Localhost alternative
+            "http://127.0.0.1:3000"       // Localhost alternative
+        ));
+        
+        // Also allow all origins via pattern (for React Native and production)
+        configuration.addAllowedOriginPattern("*");
+        
+        // Allow all HTTP methods
+        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
+        
+        // Allow all headers
+        configuration.setAllowedHeaders(Arrays.asList("*"));
+        
+        // Allow credentials
+        configuration.setAllowCredentials(true);
+        
+        // Expose headers
+        configuration.setExposedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Total-Count"));
+        
+        // Cache preflight for 1 hour
+        configuration.setMaxAge(3600L);
+        
+        org.springframework.web.cors.UrlBasedCorsConfigurationSource source = 
+            new org.springframework.web.cors.UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        
+        return source;
     }
 
     @Bean
