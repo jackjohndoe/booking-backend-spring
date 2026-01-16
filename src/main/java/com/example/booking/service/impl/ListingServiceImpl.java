@@ -22,6 +22,8 @@ import com.example.booking.util.SecurityUtils;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -37,6 +39,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class ListingServiceImpl implements ListingService {
+
+    private static final Logger logger = LoggerFactory.getLogger(ListingServiceImpl.class);
 
     private final ListingRepository listingRepository;
     private final FavoriteRepository favoriteRepository;
@@ -69,12 +73,16 @@ public class ListingServiceImpl implements ListingService {
                 .build();
 
         Listing saved = listingRepository.save(listing);
+        logger.info("Listing created with ID: {}", saved.getId());
         
         // Process and store images from request
+        logger.info("Starting image processing for newly created listing ID: {}", saved.getId());
         processImagesFromRequest(saved, request);
+        logger.info("Completed image processing for listing ID: {}", saved.getId());
         
         // Refresh to get updated photos
         saved = listingRepository.findById(saved.getId()).orElse(saved);
+        logger.info("Listing refreshed, photo count: {}", saved.getPhotos().size());
         
         return toResponse(saved, false);
     }
@@ -96,12 +104,22 @@ public class ListingServiceImpl implements ListingService {
         listing.setPolicies(convertPolicies(request.getPolicies()));
 
         Listing saved = listingRepository.save(listing);
+        logger.info("Listing updated with ID: {}", saved.getId());
         
-        // Process and store images from request (add new images, don't delete existing)
+        // Clear existing photos before adding new ones to prevent duplicates
+        logger.info("Clearing existing photos for listing ID: {} (current count: {})", saved.getId(), saved.getPhotos().size());
+        listingPhotoRepository.deleteAll(saved.getPhotos());
+        saved.getPhotos().clear();
+        logger.info("Cleared existing photos for listing ID: {}", saved.getId());
+        
+        // Process and store images from request
+        logger.info("Starting image processing for updated listing ID: {}", saved.getId());
         processImagesFromRequest(saved, request);
+        logger.info("Completed image processing for listing ID: {}", saved.getId());
         
         // Refresh to get updated photos
         saved = listingRepository.findById(saved.getId()).orElse(saved);
+        logger.info("Listing refreshed after update, photo count: {}", saved.getPhotos().size());
         
         if (isAdminAction) {
             auditService.logAdminAction(host, "LISTING_UPDATE", "Listing", id, 
@@ -347,31 +365,42 @@ public class ListingServiceImpl implements ListingService {
      */
     private void processImagesFromRequest(Listing listing, ListingRequest request) {
         if (request == null) {
+            logger.warn("ListingRequest is null - cannot process images for listing ID: {}", listing.getId());
             return;
         }
+
+        logger.info("Processing images for listing ID: {}", listing.getId());
 
         List<String> allImageData = new ArrayList<>();
 
         // Collect images from all possible fields
         if (request.getImage() != null && !request.getImage().trim().isEmpty()) {
             allImageData.add(request.getImage());
+            logger.debug("Found image in 'image' field (length: {})", request.getImage().length());
         }
         if (request.getImages() != null && !request.getImages().isEmpty()) {
             allImageData.addAll(request.getImages());
+            logger.debug("Found {} image(s) in 'images' field", request.getImages().size());
         }
         if (request.getPhotos() != null && !request.getPhotos().isEmpty()) {
             allImageData.addAll(request.getPhotos());
+            logger.debug("Found {} photo(s) in 'photos' field", request.getPhotos().size());
         }
         if (request.getImageUrl() != null && !request.getImageUrl().trim().isEmpty()) {
             allImageData.add(request.getImageUrl());
+            logger.debug("Found image in 'imageUrl' field");
         }
         if (request.getImageUrls() != null && !request.getImageUrls().isEmpty()) {
             allImageData.addAll(request.getImageUrls());
+            logger.debug("Found {} image URL(s) in 'imageUrls' field", request.getImageUrls().size());
         }
 
         if (allImageData.isEmpty()) {
+            logger.info("No images provided in request for listing ID: {}", listing.getId());
             return; // No images to process
         }
+
+        logger.info("Collected {} total image(s) from request for listing ID: {}", allImageData.size(), listing.getId());
 
         // Remove duplicates while preserving order
         List<String> uniqueImages = allImageData.stream()
@@ -380,52 +409,86 @@ public class ListingServiceImpl implements ListingService {
                 .collect(Collectors.toList());
 
         if (uniqueImages.isEmpty()) {
+            logger.warn("All images were null or empty after filtering for listing ID: {}", listing.getId());
             return;
         }
 
+        logger.info("Processing {} unique image(s) for listing ID: {}", uniqueImages.size(), listing.getId());
+
+        int successCount = 0;
+        int failureCount = 0;
+
         // Process each image
-        for (String imageData : uniqueImages) {
+        for (int i = 0; i < uniqueImages.size(); i++) {
+            String imageData = uniqueImages.get(i);
             try {
                 MultipartFile multipartFile = null;
 
                 // Check if it's a base64 data URI
                 if (imageData.startsWith("data:image/")) {
+                    logger.debug("Processing base64 image {} of {} for listing ID: {}", i + 1, uniqueImages.size(), listing.getId());
                     try {
                         multipartFile = new Base64ToMultipartFile(imageData);
+                        logger.debug("Successfully converted base64 to MultipartFile (size: {} bytes)", multipartFile.getSize());
                     } catch (IllegalArgumentException e) {
-                        // Invalid base64 format, skip this image
+                        logger.error("Invalid base64 format for image {} of {} for listing ID {}: {}", 
+                                i + 1, uniqueImages.size(), listing.getId(), e.getMessage());
+                        failureCount++;
                         continue;
                     }
                 } else if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
                     // It's a URL - we could download it, but for now, just store the URL as a path
-                    // This is a simplified approach - in production, you might want to download and store the image
+                    logger.debug("Processing URL image {} of {} for listing ID: {}", i + 1, uniqueImages.size(), listing.getId());
                     ListingPhoto photo = ListingPhoto.builder()
                             .listing(listing)
                             .path(imageData) // Store URL as path
                             .build();
-                    listingPhotoRepository.save(photo);
-                    listing.getPhotos().add(photo);
+                    ListingPhoto savedPhoto = listingPhotoRepository.save(photo);
+                    listing.getPhotos().add(savedPhoto);
+                    successCount++;
+                    logger.info("Saved URL image {} of {} for listing ID: {} (path: {})", 
+                            i + 1, uniqueImages.size(), listing.getId(), imageData);
                     continue;
                 } else {
-                    // Not a valid format, skip
+                    logger.warn("Invalid image format for image {} of {} for listing ID: {} (does not start with data:image/, http://, or https://)", 
+                            i + 1, uniqueImages.size(), listing.getId());
+                    failureCount++;
                     continue;
                 }
 
                 // Store the file if it's a MultipartFile (base64)
                 if (multipartFile != null && !multipartFile.isEmpty()) {
+                    logger.debug("Storing base64 image {} of {} for listing ID: {}", i + 1, uniqueImages.size(), listing.getId());
                     String path = storageService.store(multipartFile, "listings/" + listing.getId());
+                    logger.debug("Image stored at path: {}", path);
                     ListingPhoto photo = ListingPhoto.builder()
                             .listing(listing)
                             .path(path)
                             .build();
                     ListingPhoto savedPhoto = listingPhotoRepository.save(photo);
                     listing.getPhotos().add(savedPhoto);
+                    successCount++;
+                    logger.info("Successfully saved base64 image {} of {} for listing ID: {} (path: {})", 
+                            i + 1, uniqueImages.size(), listing.getId(), path);
+                } else {
+                    logger.warn("MultipartFile is null or empty for image {} of {} for listing ID: {}", 
+                            i + 1, uniqueImages.size(), listing.getId());
+                    failureCount++;
                 }
             } catch (Exception e) {
-                // Log error but continue processing other images
-                // In production, you might want to use a logger here
-                System.err.println("Error processing image: " + e.getMessage());
+                logger.error("Error processing image {} of {} for listing ID {}: {}", 
+                        i + 1, uniqueImages.size(), listing.getId(), e.getMessage(), e);
+                failureCount++;
             }
+        }
+
+        logger.info("Image processing complete for listing ID: {}. Success: {}, Failed: {}, Total: {}", 
+                listing.getId(), successCount, failureCount, uniqueImages.size());
+
+        if (successCount == 0 && failureCount > 0) {
+            logger.error("CRITICAL: Failed to process ALL {} image(s) for listing ID: {}", uniqueImages.size(), listing.getId());
+        } else if (successCount > 0) {
+            logger.info("Successfully processed {} image(s) for listing ID: {}", successCount, listing.getId());
         }
     }
 }
