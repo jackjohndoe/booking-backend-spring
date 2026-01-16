@@ -17,6 +17,7 @@ import com.example.booking.service.AuditService;
 import com.example.booking.service.ListingService;
 import com.example.booking.service.StorageService;
 import com.example.booking.specification.ListingSpecifications;
+import com.example.booking.util.Base64ToMultipartFile;
 import com.example.booking.util.SecurityUtils;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -26,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.HashSet;
 import java.util.List;
@@ -67,6 +69,13 @@ public class ListingServiceImpl implements ListingService {
                 .build();
 
         Listing saved = listingRepository.save(listing);
+        
+        // Process and store images from request
+        processImagesFromRequest(saved, request);
+        
+        // Refresh to get updated photos
+        saved = listingRepository.findById(saved.getId()).orElse(saved);
+        
         return toResponse(saved, false);
     }
 
@@ -87,6 +96,12 @@ public class ListingServiceImpl implements ListingService {
         listing.setPolicies(convertPolicies(request.getPolicies()));
 
         Listing saved = listingRepository.save(listing);
+        
+        // Process and store images from request (add new images, don't delete existing)
+        processImagesFromRequest(saved, request);
+        
+        // Refresh to get updated photos
+        saved = listingRepository.findById(saved.getId()).orElse(saved);
         
         if (isAdminAction) {
             auditService.logAdminAction(host, "LISTING_UPDATE", "Listing", id, 
@@ -323,5 +338,94 @@ public class ListingServiceImpl implements ListingService {
                 .map(storageService::resolveUrl)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * Process images from ListingRequest and store them as ListingPhoto entities.
+     * Supports base64 data URIs and regular URLs.
+     * Collects images from all possible fields: image, images, photos, imageUrl, imageUrls
+     */
+    private void processImagesFromRequest(Listing listing, ListingRequest request) {
+        if (request == null) {
+            return;
+        }
+
+        List<String> allImageData = new ArrayList<>();
+
+        // Collect images from all possible fields
+        if (request.getImage() != null && !request.getImage().trim().isEmpty()) {
+            allImageData.add(request.getImage());
+        }
+        if (request.getImages() != null && !request.getImages().isEmpty()) {
+            allImageData.addAll(request.getImages());
+        }
+        if (request.getPhotos() != null && !request.getPhotos().isEmpty()) {
+            allImageData.addAll(request.getPhotos());
+        }
+        if (request.getImageUrl() != null && !request.getImageUrl().trim().isEmpty()) {
+            allImageData.add(request.getImageUrl());
+        }
+        if (request.getImageUrls() != null && !request.getImageUrls().isEmpty()) {
+            allImageData.addAll(request.getImageUrls());
+        }
+
+        if (allImageData.isEmpty()) {
+            return; // No images to process
+        }
+
+        // Remove duplicates while preserving order
+        List<String> uniqueImages = allImageData.stream()
+                .filter(img -> img != null && !img.trim().isEmpty())
+                .distinct()
+                .collect(Collectors.toList());
+
+        if (uniqueImages.isEmpty()) {
+            return;
+        }
+
+        // Process each image
+        for (String imageData : uniqueImages) {
+            try {
+                MultipartFile multipartFile = null;
+
+                // Check if it's a base64 data URI
+                if (imageData.startsWith("data:image/")) {
+                    try {
+                        multipartFile = new Base64ToMultipartFile(imageData);
+                    } catch (IllegalArgumentException e) {
+                        // Invalid base64 format, skip this image
+                        continue;
+                    }
+                } else if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
+                    // It's a URL - we could download it, but for now, just store the URL as a path
+                    // This is a simplified approach - in production, you might want to download and store the image
+                    ListingPhoto photo = ListingPhoto.builder()
+                            .listing(listing)
+                            .path(imageData) // Store URL as path
+                            .build();
+                    listingPhotoRepository.save(photo);
+                    listing.getPhotos().add(photo);
+                    continue;
+                } else {
+                    // Not a valid format, skip
+                    continue;
+                }
+
+                // Store the file if it's a MultipartFile (base64)
+                if (multipartFile != null && !multipartFile.isEmpty()) {
+                    String path = storageService.store(multipartFile, "listings/" + listing.getId());
+                    ListingPhoto photo = ListingPhoto.builder()
+                            .listing(listing)
+                            .path(path)
+                            .build();
+                    ListingPhoto savedPhoto = listingPhotoRepository.save(photo);
+                    listing.getPhotos().add(savedPhoto);
+                }
+            } catch (Exception e) {
+                // Log error but continue processing other images
+                // In production, you might want to use a logger here
+                System.err.println("Error processing image: " + e.getMessage());
+            }
+        }
     }
 }

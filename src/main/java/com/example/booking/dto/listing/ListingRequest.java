@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Set;
 
 @Data
@@ -32,4 +33,19 @@ public class ListingRequest {
 
     @Schema(description = "Set of policies", example = "[\"No smoking\", \"No pets\", \"Check-in after 3 PM\"]")
     private Set<String> policies;
+
+    @Schema(description = "Primary image URL or base64 data URI", example = "data:image/jpeg;base64,/9j/4AAQSkZJRg...")
+    private String image;
+
+    @Schema(description = "Array of image URLs or base64 data URIs", example = "[\"data:image/jpeg;base64,...\", \"https://example.com/image.jpg\"]")
+    private List<String> images;
+
+    @Schema(description = "Array of photo URLs or base64 data URIs (alias for images)", example = "[\"data:image/jpeg;base64,...\"]")
+    private List<String> photos;
+
+    @Schema(description = "Image URL (alternative field name)", example = "https://example.com/image.jpg")
+    private String imageUrl;
+
+    @Schema(description = "Array of image URLs (alternative field name)", example = "[\"https://example.com/image1.jpg\", \"https://example.com/image2.jpg\"]")
+    private List<String> imageUrls;
 }
