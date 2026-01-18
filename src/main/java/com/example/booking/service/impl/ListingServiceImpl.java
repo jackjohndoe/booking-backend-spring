@@ -425,10 +425,11 @@ public class ListingServiceImpl implements ListingService {
                 MultipartFile multipartFile = null;
 
                 // Check if it's a base64 data URI
-                if (imageData.startsWith("data:image/")) {
+                String trimmed = imageData.trim();
+                if (trimmed.startsWith("data:image/")) {
                     logger.debug("Processing base64 image {} of {} for listing ID: {}", i + 1, uniqueImages.size(), listing.getId());
                     try {
-                        multipartFile = new Base64ToMultipartFile(imageData);
+                        multipartFile = new Base64ToMultipartFile(trimmed);
                         logger.debug("Successfully converted base64 to MultipartFile (size: {} bytes)", multipartFile.getSize());
                     } catch (IllegalArgumentException e) {
                         logger.error("Invalid base64 format for image {} of {} for listing ID {}: {}", 
@@ -436,24 +437,50 @@ public class ListingServiceImpl implements ListingService {
                         failureCount++;
                         continue;
                     }
-                } else if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
+                } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
                     // It's a URL - we could download it, but for now, just store the URL as a path
                     logger.debug("Processing URL image {} of {} for listing ID: {}", i + 1, uniqueImages.size(), listing.getId());
                     ListingPhoto photo = ListingPhoto.builder()
                             .listing(listing)
-                            .path(imageData) // Store URL as path
+                            .path(trimmed)
                             .build();
                     ListingPhoto savedPhoto = listingPhotoRepository.save(photo);
                     listing.getPhotos().add(savedPhoto);
                     successCount++;
                     logger.info("Saved URL image {} of {} for listing ID: {} (path: {})", 
-                            i + 1, uniqueImages.size(), listing.getId(), imageData);
+                            i + 1, uniqueImages.size(), listing.getId(), trimmed);
                     continue;
+                } else if (trimmed.contains(";base64,")) {
+                    int idx = trimmed.indexOf(";base64,");
+                    String headerPart = trimmed.substring(0, idx);
+                    String base64Part = trimmed.substring(idx + 8);
+                    String header = headerPart.startsWith("data:") ? headerPart : "data:image/jpeg";
+                    String normalized = header + ";base64," + base64Part;
+                    try {
+                        multipartFile = new Base64ToMultipartFile(normalized);
+                    } catch (IllegalArgumentException e) {
+                        logger.error("Invalid base64 content for listing ID {}: {}", listing.getId(), e.getMessage());
+                        failureCount++;
+                        continue;
+                    }
                 } else {
-                    logger.warn("Invalid image format for image {} of {} for listing ID: {} (does not start with data:image/, http://, or https://)", 
-                            i + 1, uniqueImages.size(), listing.getId());
-                    failureCount++;
-                    continue;
+                    String base64Candidate = trimmed.replace("\r", "").replace("\n", "");
+                    boolean looksBase64 = base64Candidate.length() > 200 && base64Candidate.matches("^[A-Za-z0-9+/=]+$");
+                    if (looksBase64) {
+                        String normalized = "data:image/jpeg;base64," + base64Candidate;
+                        try {
+                            multipartFile = new Base64ToMultipartFile(normalized);
+                        } catch (IllegalArgumentException e) {
+                            logger.warn("String looked like base64 but failed conversion for listing ID {}: {}", listing.getId(), e.getMessage());
+                            failureCount++;
+                            continue;
+                        }
+                    } else {
+                        logger.warn("Invalid image format for image {} of {} for listing ID: {} (unrecognized string format)", 
+                                i + 1, uniqueImages.size(), listing.getId());
+                        failureCount++;
+                        continue;
+                    }
                 }
 
                 // Store the file if it's a MultipartFile (base64)
